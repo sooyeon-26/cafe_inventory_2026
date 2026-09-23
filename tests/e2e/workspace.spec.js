@@ -204,12 +204,7 @@ test("curved flow, replayable feedback and a populated three-item queue", async 
     name: "발주 목록에 추가",
     exact: true,
   });
-  await expect(page.locator(".order-flow-path")).toHaveAttribute(
-    "d",
-    /M .+ C /,
-  );
-  await add.hover();
-  await expect(page.locator(".order-flow-path")).toHaveCSS("opacity", "0.6");
+  await expect(page.locator(".order-flow")).toHaveCount(0);
   await add.click();
   await expect(page.locator(".order-transfer")).toHaveCount(1);
   await expect
@@ -219,6 +214,11 @@ test("curved flow, replayable feedback and a populated three-item queue", async 
         .evaluate((node) => node.getAnimations().length),
     )
     .toBeGreaterThan(0);
+  await expect(page.locator(".order-flow-path")).toHaveAttribute(
+    "d",
+    /M .+ C /,
+  );
+  await expect(page.locator(".order-flow-path")).toHaveCSS("opacity", "0.45");
   for (const name of ["바닐라 시럽", "테이크아웃 컵"]) {
     await page
       .locator(".item-row")
@@ -259,4 +259,128 @@ test("reduced-motion users keep order feedback without movement", async ({
       .getByTestId("queue-oat")
       .evaluate((node) => node.getAnimations().length),
   ).toBe(0);
+});
+
+test("connector represents only matching items through selection, removal and resize", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const select = (name) =>
+    page
+      .locator(".item-row")
+      .filter({ has: page.getByText(name, { exact: true }) })
+      .click();
+  const flow = page.locator(".order-flow");
+  const add = page.getByRole("button", {
+    name: "발주 목록에 추가",
+    exact: true,
+  });
+  await expect(flow).toHaveCount(0);
+  await add.click();
+  await expect(flow).toHaveAttribute("data-connected-id", "oat");
+  await expect(page.getByTestId("queue-oat")).toHaveClass(/is-selected/);
+  await select("하우스 블렌드 원두");
+  await expect(flow).toHaveCount(0);
+  await expect(page.locator(".queue-item.is-selected")).toHaveCount(0);
+  await add.click();
+  await expect(flow).toHaveAttribute("data-connected-id", "beans");
+  await expect(flow).toHaveClass(/order-flow-feedback/);
+  await expect(page.getByTestId("order-total")).toHaveText("20개");
+  await select("오트밀크");
+  await expect(flow).toHaveAttribute("data-connected-id", "oat");
+  for (const width of [1280, 1024, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    if (width === 1024) {
+      await expect(flow).toHaveCount(0);
+      continue;
+    }
+    await expect(flow).toBeVisible();
+    await expect
+      .poll(async () =>
+        flow.evaluate((svg) => {
+          const root = svg.getBoundingClientRect();
+          const row = document
+            .querySelector('[data-testid="queue-oat"]')
+            .getBoundingClientRect();
+          const button = document
+            .querySelector(".add-order")
+            .getBoundingClientRect();
+          const path = svg.querySelector("path");
+          const start = path.getPointAtLength(0),
+            end = path.getPointAtLength(path.getTotalLength());
+          return Math.max(
+            Math.abs(root.left + start.x - button.right - 4),
+            Math.abs(root.top + start.y - button.top - button.height / 2),
+            Math.abs(root.left + end.x - row.left + 5),
+            Math.abs(root.top + end.y - row.top - 26),
+          );
+        }),
+      )
+      .toBeLessThan(2);
+  }
+  await page
+    .getByRole("button", { name: "오트밀크 발주 목록에서 삭제" })
+    .click();
+  await expect(flow).toHaveCount(0);
+  await expect(page.locator(".queue-item.is-selected")).toHaveCount(0);
+  await expect(
+    page.locator(".suggested-body svg, .add-order svg, .create-order svg"),
+  ).toHaveCount(0);
+});
+
+test("queue summary follows short lists and long lists scroll without false anchors", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const add = page.getByRole("button", {
+    name: "발주 목록에 추가",
+    exact: true,
+  });
+  for (const name of [
+    "오트밀크",
+    "바닐라 시럽",
+    "테이크아웃 컵",
+    "하우스 블렌드 원두",
+    "우유",
+  ]) {
+    await page
+      .locator(".item-row")
+      .filter({ has: page.getByText(name, { exact: true }) })
+      .click();
+    await add.click();
+    const count = await page.locator(".queue-item").count();
+    if (count <= 3) {
+      const gap = await page
+        .locator(".order-summary")
+        .evaluate(
+          (node) =>
+            node.getBoundingClientRect().top -
+            document.querySelector(".queue-list").getBoundingClientRect()
+              .bottom,
+        );
+      expect(gap).toBeGreaterThanOrEqual(24);
+      expect(gap).toBeLessThanOrEqual(32);
+      expect(
+        await page
+          .locator(".queue-list")
+          .evaluate((node) => node.scrollHeight - node.clientHeight),
+      ).toBeLessThanOrEqual(1);
+    }
+  }
+  expect(
+    await page
+      .locator(".queue-list")
+      .evaluate((node) => node.scrollHeight > node.clientHeight),
+  ).toBe(true);
+  await page.locator(".queue-list").evaluate((node) => {
+    node.scrollTop = 0;
+  });
+  await expect(page.locator(".order-flow")).toHaveCount(0);
+  await page.locator(".queue-list").evaluate((node) => {
+    node.scrollTop = node.scrollHeight;
+  });
+  await expect(page.locator(".order-flow")).toHaveAttribute(
+    "data-connected-id",
+    "milk",
+  );
 });

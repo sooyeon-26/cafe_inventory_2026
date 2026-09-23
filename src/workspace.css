@@ -195,6 +195,13 @@
 .add-order {
   border-color: #bed4f6;
   background: #eef4ff;
+  justify-content: center;
+}
+.create-order {
+  justify-content: center;
+}
+.add-order:active:not(:disabled) {
+  transform: scale(0.99);
 }
 .add-order:hover:not(:disabled),
 .add-order:focus-visible {
@@ -207,6 +214,9 @@
 
 .queue-list {
   margin-top: 23px;
+  flex: 0 1 auto;
+  max-height: 420px;
+  overflow-y: auto;
 }
 .queue-item,
 .queue-item.is-selected {
@@ -216,18 +226,8 @@
   background: #fff;
   border-bottom: 1px solid #edf0f2;
 }
-.queue-item.is-selected .queue-name {
-  color: #2b69bd;
-}
-.queue-item.is-selected::before {
-  content: "";
-  position: absolute;
-  left: -3px;
-  top: 22px;
-  width: 4px;
-  height: 4px;
-  background: #6398e5;
-  border-radius: 50%;
+.queue-item.is-selected {
+  background: #f2f6fd;
 }
 .queue-name {
   font-weight: 600;
@@ -288,7 +288,9 @@
 }
 .order-summary {
   border-color: #e8edf1;
-  padding-top: 18px;
+  margin-top: 24px;
+  padding-top: 21px;
+  flex-shrink: 0;
 }
 .order-summary > div {
   margin-bottom: 12px;
@@ -315,7 +317,7 @@
   fill: none;
   stroke: #2375f5;
   stroke-width: 1.25;
-  opacity: 0.24;
+  opacity: 0.28;
   transition: opacity 0.2s;
 }
 .order-flow-end {
@@ -324,11 +326,12 @@
   transition: opacity 0.2s;
 }
 .workspace:has(.add-order:hover) .order-flow-path,
-.workspace:has(.add-order:focus-visible) .order-flow-path {
-  opacity: 0.6;
+.workspace:has(.add-order:focus-visible) .order-flow-path,
+.order-flow-feedback .order-flow-path {
+  opacity: 0.45;
 }
 .workspace:has(.add-order:hover) .order-flow-end {
-  opacity: 0.7;
+  opacity: 0.45;
 }
 .order-transfer {
   animation: transfer-fade 0.42s ease both;

@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { Arrow, QuantityControl } from "./Controls.jsx";
+import { QuantityControl } from "./Controls.jsx";
 
 export default function OrderQueue({
   items,
@@ -28,7 +28,10 @@ export default function OrderQueue({
         list.scrollTop += top;
       if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches)
         row.animate(
-          [{ backgroundColor: "#dfebff" }, { backgroundColor: "#fff" }],
+          [
+            { backgroundColor: "#dfebff" },
+            { backgroundColor: getComputedStyle(row).backgroundColor },
+          ],
           { duration: 650, easing: "ease-out" },
         );
     }
@@ -160,7 +163,6 @@ export default function OrderQueue({
             onClick={onOrder}
           >
             발주하기
-            <Arrow />
           </button>
           <p>데모 발주로 기록되며 실제 주문은 전송되지 않습니다.</p>
         </div>

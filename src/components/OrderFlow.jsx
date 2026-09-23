@@ -1,18 +1,12 @@
 import { useId, useEffect, useState } from "react";
 
 // Measure the existing controls so the connector follows selection, resize and queue scrolling.
-export default function OrderFlow({
-  workspaceRef,
-  selectedId,
-  enabled,
-  pulse,
-  queue,
-}) {
+export default function OrderFlow({ workspaceRef, selectedId, pulse, queue }) {
   const pathId = useId();
   const [curve, setCurve] = useState(null);
   useEffect(() => {
     const workspace = workspaceRef.current;
-    if (!workspace || !enabled) {
+    if (!workspace || !queue.some((entry) => entry.id === selectedId)) {
       setCurve(null);
       return;
     }
@@ -21,10 +15,7 @@ export default function OrderFlow({
     const row = [...workspace.querySelectorAll("[data-item-id]")].find(
       (node) => node.dataset.itemId === selectedId,
     );
-    const target =
-      row ??
-      workspace.querySelector(".queue-empty") ??
-      workspace.querySelector(".order-queue .section-heading");
+    const target = row;
     if (!source || !target) return;
     const measure = () => {
       if (window.innerWidth <= 1100) {
@@ -35,13 +26,15 @@ export default function OrderFlow({
       const a = source.getBoundingClientRect();
       const b = target.getBoundingClientRect();
       const bounds = list.getBoundingClientRect();
+      // Never point at the list boundary or another row when the anchor is offscreen.
+      if (b.top + 26 < bounds.top || b.top + 26 > bounds.bottom) {
+        setCurve(null);
+        return;
+      }
       const x1 = a.right - root.left + 4,
         y1 = a.top - root.top + a.height / 2;
       const x2 = b.left - root.left - 5;
-      const y2 =
-        (row
-          ? Math.min(Math.max(b.top + 26, bounds.top + 12), bounds.bottom - 12)
-          : b.top + 26) - root.top;
+      const y2 = b.top + 26 - root.top;
       const mid = (x1 + x2) / 2;
       setCurve({
         d: `M ${x1} ${y1} C ${mid + 12} ${y1}, ${mid - 12} ${y2}, ${x2} ${y2}`,
@@ -59,10 +52,14 @@ export default function OrderFlow({
       window.removeEventListener("resize", measure);
       workspace.removeEventListener("scroll", measure, true);
     };
-  }, [workspaceRef, selectedId, enabled, queue, pulse]);
+  }, [workspaceRef, selectedId, queue, pulse]);
   if (!curve) return null;
   return (
-    <svg className="order-flow" aria-hidden="true">
+    <svg
+      className={`order-flow ${pulse?.id === selectedId ? "order-flow-feedback" : ""}`}
+      aria-hidden="true"
+      data-connected-id={selectedId}
+    >
       <path id={pathId} d={curve.d} className="order-flow-path" />
       <circle cx={curve.x2} cy={curve.y2} r="3" className="order-flow-end" />
       {pulse?.id === selectedId && (

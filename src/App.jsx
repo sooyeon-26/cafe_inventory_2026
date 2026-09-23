@@ -151,13 +151,15 @@ export default function App() {
             onClose={() => setQueueOpen(false)}
             pulse={pulse}
           />
-          <OrderFlow
-            workspaceRef={workspaceRef}
-            selectedId={selected?.id}
-            enabled={!!selected && (queued || suggestedOrder(selected) > 0)}
-            pulse={pulse}
-            queue={state.queue}
-          />
+          {queued && (
+            <OrderFlow
+              key={selected.id}
+              workspaceRef={workspaceRef}
+              selectedId={selected?.id}
+              pulse={pulse}
+              queue={state.queue}
+            />
+          )}
         </div>
         <footer className="page-footer">
           <span>

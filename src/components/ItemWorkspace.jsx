@@ -1,4 +1,4 @@
-import { Arrow, QuantityControl, StatusBadge } from "./Controls.jsx";
+import { QuantityControl, StatusBadge } from "./Controls.jsx";
 import { suggestedOrder } from "../inventory.js";
 
 export function StockRange({ item }) {
@@ -166,7 +166,6 @@ export default function ItemWorkspace({
               </>
             )}
           </p>
-          <Arrow className="suggested-arrow" />
         </div>
         <button
           className={`add-order ${queued ? "queued" : ""}`}
@@ -174,7 +173,6 @@ export default function ItemWorkspace({
           onClick={onAdd}
         >
           {queued ? "발주 목록에서 확인" : "발주 목록에 추가"}
-          <Arrow />
         </button>
       </div>
       <div className="detail-footer">
