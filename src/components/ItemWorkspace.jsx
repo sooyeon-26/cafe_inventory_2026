@@ -42,13 +42,19 @@ export function StockRange({ item }) {
           className="range-zone green"
           style={{ left: percent(item.target), right: 0 }}
         />
-        <span className="range-tick" style={{ left: percent(item.minimum) }} />
-        <span className="range-tick" style={{ left: percent(item.target) }} />
+        <span
+          className="range-tick minimum-marker"
+          style={{ left: percent(item.minimum) }}
+        />
+        <span
+          className="range-tick target-marker"
+          style={{ left: percent(item.target) }}
+        />
         <span
           className={`range-current ${tone}`}
           style={{ left: percent(item.stock) }}
         >
-          <span>{item.stock}</span>
+          <span>현재 {item.stock}</span>
         </span>
       </div>
       <div className="range-endpoints">
@@ -75,7 +81,6 @@ export default function ItemWorkspace({
   queued,
   onEdit,
   onDelete,
-  pulse,
 }) {
   if (!item)
     return (
@@ -106,7 +111,6 @@ export default function ItemWorkspace({
           <h1>{item.name}</h1>
           <StatusBadge item={item} />
         </div>
-        <p>작은 확인이 만드는, 여유로운 카페 운영.</p>
       </div>
       <div className="stock-section">
         <span className="eyebrow">CURRENT STOCK</span>
@@ -137,7 +141,7 @@ export default function ItemWorkspace({
           </strong>
         </div>
       </div>
-      <div className={`suggested-section ${pulse ? "sending" : ""}`}>
+      <div className="suggested-section">
         <div className="suggestion-heading">
           <span className="eyebrow">SUGGESTED ORDER</span>
           <span className="suggestion-note">적정 재고 − 현재 재고</span>
@@ -150,9 +154,9 @@ export default function ItemWorkspace({
           <p>
             {suggested ? (
               <>
-                {suggested}개를 채우면
+                적정 재고 {item.target}개까지
                 <br />
-                적정 재고 {item.target}개가 됩니다.
+                {suggested}개 부족합니다.
               </>
             ) : (
               <>
@@ -172,9 +176,6 @@ export default function ItemWorkspace({
           {queued ? "발주 목록에서 확인" : "발주 목록에 추가"}
           <Arrow />
         </button>
-        <span className="flow-connector" aria-hidden="true">
-          <Arrow />
-        </span>
       </div>
       <div className="detail-footer">
         <span className="small-check">✓</span>재고 변경은 자동으로 저장됩니다

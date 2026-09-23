@@ -50,6 +50,7 @@ npm run preview
 
 ```sh
 npm test
+npm run lint
 npx playwright install chromium
 npm run test:e2e
 ```
@@ -64,4 +65,5 @@ npm run test:e2e
 - `src/useInventory.js`: 저장과 복원
 - `src/data.js`: 최초 목업 데이터
 - `src/styles.css`: 데스크탑 레이아웃, 상태 스타일, 반응형 처리
+- `src/workspace.css`: 선택·필터·수량 조작과 중앙→발주 목록 연결 스타일
 - `tests/`: 단위 및 Playwright 브라우저 테스트

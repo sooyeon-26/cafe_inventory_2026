@@ -15,6 +15,25 @@ export default function OrderQueue({
 }) {
   const panel = useRef(null);
   useEffect(() => {
+    if (!pulse) return;
+    const row = [...panel.current.querySelectorAll("[data-item-id]")].find(
+      (node) => node.dataset.itemId === pulse.id,
+    );
+    // Scroll only the queue, without moving the whole workspace.
+    if (row) {
+      const list = row.parentElement;
+      const top =
+        row.getBoundingClientRect().top - list.getBoundingClientRect().top;
+      if (top < 0 || top + row.offsetHeight > list.clientHeight)
+        list.scrollTop += top;
+      if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches)
+        row.animate(
+          [{ backgroundColor: "#dfebff" }, { backgroundColor: "#fff" }],
+          { duration: 650, easing: "ease-out" },
+        );
+    }
+  }, [pulse]);
+  useEffect(() => {
     if (!open) return;
     const previous = document.activeElement;
     panel.current.querySelector(".drawer-close").focus();
@@ -71,7 +90,6 @@ export default function OrderQueue({
             ×
           </button>
         </div>
-        <p className="queue-intro">필요한 만큼, 빠짐없이.</p>
         <div className="queue-list">
           {queue.map((entry) => {
             const item = items.find((item) => item.id === entry.id);
@@ -79,7 +97,8 @@ export default function OrderQueue({
               <article
                 key={entry.id}
                 data-testid={`queue-${entry.id}`}
-                className={`queue-item ${selectedId === entry.id ? "is-selected" : ""} ${pulse?.id === entry.id ? "queue-pulse" : ""}`}
+                data-item-id={entry.id}
+                className={`queue-item ${selectedId === entry.id ? "is-selected" : ""}`}
               >
                 <div className="queue-item-heading">
                   <button
@@ -115,20 +134,8 @@ export default function OrderQueue({
           })}
           {!queue.length && (
             <div className="queue-empty">
-              <div className="empty-queue-symbol" aria-hidden="true">
-                <span />
-                <span />
-                <span />
-              </div>
-              <strong>발주할 품목을 모아보세요</strong>
-              <p>
-                왼쪽에서 품목을 선택하고
-                <br />
-                권장 발주량을 목록에 담아주세요.
-              </p>
-              <span className="empty-flow">
-                품목 선택 <span>→</span> 재고 확인 <span>→</span> 추가
-              </span>
+              <strong>아직 담긴 품목이 없습니다.</strong>
+              <p>중앙에서 필요한 품목을 추가해보세요.</p>
             </div>
           )}
         </div>

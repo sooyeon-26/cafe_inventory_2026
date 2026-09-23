@@ -73,11 +73,15 @@ export default function ItemBrowser({
         {filters.map(([value, label]) => (
           <button
             key={value}
+            aria-label={label}
             aria-pressed={filter === value}
             className={filter === value ? "active" : ""}
             onClick={() => setFilter(value)}
           >
-            {label}
+            {value === "low" ? "발주" : label}
+            <span className="filter-count">
+              {filterItems(items, "", value).length}
+            </span>
           </button>
         ))}
       </div>

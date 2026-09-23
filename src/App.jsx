@@ -1,8 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useInventory } from "./useInventory.js";
 import ItemBrowser from "./components/ItemBrowser.jsx";
 import ItemWorkspace from "./components/ItemWorkspace.jsx";
 import OrderQueue from "./components/OrderQueue.jsx";
+import OrderFlow from "./components/OrderFlow.jsx";
+import { suggestedOrder } from "./inventory.js";
 import { History, ItemForm, Modal } from "./components/Dialogs.jsx";
 
 export default function App() {
@@ -14,6 +16,7 @@ export default function App() {
   const [queueOpen, setQueueOpen] = useState(false);
   const [toast, setToast] = useState(null);
   const [pulse, setPulse] = useState(null);
+  const workspaceRef = useRef(null);
   const selected =
     state.items.find((item) => item.id === selectedId) ?? state.items[0];
   const queued = state.queue.some((item) => item.id === selected?.id);
@@ -24,7 +27,7 @@ export default function App() {
   }, [toast]);
   useEffect(() => {
     if (!pulse) return;
-    const timer = setTimeout(() => setPulse(null), 600);
+    const timer = setTimeout(() => setPulse(null), 700);
     return () => clearTimeout(timer);
   }, [pulse]);
   useEffect(() => {
@@ -37,7 +40,13 @@ export default function App() {
   const notify = (text) => setToast({ text, id: crypto.randomUUID() });
   const addOrder = () => {
     act({ type: "queue-add", id: selected.id });
-    setPulse({ id: selected.id, key: Date.now() });
+    setPulse({
+      id: selected.id,
+      key: crypto.randomUUID(),
+      quantity:
+        state.queue.find((entry) => entry.id === selected.id)?.quantity ??
+        suggestedOrder(selected),
+    });
     if (window.innerWidth <= 1100) setQueueOpen(true);
     notify(
       queued
@@ -71,10 +80,6 @@ export default function App() {
           </button>
         </nav>
         <div className="header-right">
-          <span className="demo-badge">
-            <i />
-            Demo workspace
-          </span>
           <button className="queue-toggle" onClick={() => setQueueOpen(true)}>
             발주 목록 <b>{state.queue.length}</b>
           </button>
@@ -83,7 +88,6 @@ export default function App() {
       <main>
         <div className="page-heading">
           <div>
-            <div className="page-kicker">A LITTLE ORDER. A BETTER DAY.</div>
             <h2>오늘의 재고, 한눈에.</h2>
             <p>재고를 확인하고, 필요한 만큼 채워보세요.</p>
           </div>
@@ -108,7 +112,7 @@ export default function App() {
             {storageError}
           </div>
         )}
-        <div className="workspace">
+        <div className="workspace" ref={workspaceRef}>
           <ItemBrowser
             items={state.items}
             selectedId={selected?.id}
@@ -126,7 +130,6 @@ export default function App() {
             queued={queued}
             onEdit={() => setDialog("edit")}
             onDelete={() => setDialog("delete")}
-            pulse={pulse?.id === selected?.id}
           />
           <OrderQueue
             items={state.items}
@@ -148,9 +151,15 @@ export default function App() {
             onClose={() => setQueueOpen(false)}
             pulse={pulse}
           />
+          <OrderFlow
+            workspaceRef={workspaceRef}
+            selectedId={selected?.id}
+            enabled={!!selected && (queued || suggestedOrder(selected) > 0)}
+            pulse={pulse}
+            queue={state.queue}
+          />
         </div>
         <footer className="page-footer">
-          <span>Less counting. More creating.</span>
           <span>
             Cafe Inventory <span className="footer-divider">/</span> 재고에서
             발주까지, 하나의 흐름

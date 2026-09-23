@@ -1,4 +1,5 @@
 import { MAX_QUANTITY, statusLabels, statusOf } from "../inventory.js";
+import { useEffect, useRef } from "react";
 
 export function Arrow({ className = "" }) {
   return (
@@ -36,6 +37,20 @@ export function QuantityControl({
   large = false,
   min = 0,
 }) {
+  const inputRef = useRef(null);
+  const previous = useRef(value);
+  useEffect(() => {
+    if (
+      large &&
+      previous.current !== value &&
+      !window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ) {
+      inputRef.current.animate([{ opacity: 0.55 }, { opacity: 1 }], {
+        duration: 150,
+      });
+    }
+    previous.current = value;
+  }, [value, large]);
   return (
     <div className={`quantity-control ${large ? "large" : ""}`}>
       <button
@@ -47,6 +62,7 @@ export function QuantityControl({
         −
       </button>
       <input
+        ref={inputRef}
         aria-label={label}
         style={
           large && value >= 10000

@@ -166,3 +166,97 @@ test("corrupt saved data is preserved with an explicit warning", async ({
     await page.evaluate(() => localStorage.getItem("cafe-inventory:v1")),
   ).toBe("{broken");
 });
+
+test("filter counts follow live stock while search retains inventory totals", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const urgent = page.getByRole("button", { name: "긴급", exact: true });
+  const normal = page.getByRole("button", { name: "정상", exact: true });
+  const low = page.getByRole("button", { name: "발주 필요", exact: true });
+  await expect(urgent).toHaveText("긴급3");
+  await page
+    .getByRole("spinbutton", { name: "오트밀크 현재 재고", exact: true })
+    .fill("5");
+  await expect(urgent).toHaveText("긴급2");
+  await expect(normal).toHaveText("정상6");
+  await expect(low).toHaveText("발주4");
+  await expect(page.locator(".item-workspace .status")).toHaveText("정상");
+  await expect(page.locator(".suggested-number")).toHaveText("5개");
+  await page.getByRole("textbox", { name: "품목 검색" }).fill("오트");
+  await expect(normal).toHaveText("정상6");
+  await expect(page.locator(".item-row")).toHaveCount(1);
+});
+
+test("curved flow, replayable feedback and a populated three-item queue", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await expect(page.locator(".queue-empty")).toContainText(
+    "아직 담긴 품목이 없습니다.",
+  );
+  await expect(page.locator(".queue-empty")).toBeInViewport();
+  await page.screenshot({
+    path: "test-results/workspace-empty.png",
+    fullPage: true,
+  });
+  const add = page.getByRole("button", {
+    name: "발주 목록에 추가",
+    exact: true,
+  });
+  await expect(page.locator(".order-flow-path")).toHaveAttribute(
+    "d",
+    /M .+ C /,
+  );
+  await add.hover();
+  await expect(page.locator(".order-flow-path")).toHaveCSS("opacity", "0.6");
+  await add.click();
+  await expect(page.locator(".order-transfer")).toHaveCount(1);
+  await expect
+    .poll(() =>
+      page
+        .getByTestId("queue-oat")
+        .evaluate((node) => node.getAnimations().length),
+    )
+    .toBeGreaterThan(0);
+  for (const name of ["바닐라 시럽", "테이크아웃 컵"]) {
+    await page
+      .locator(".item-row")
+      .filter({ has: page.getByText(name, { exact: true }) })
+      .click();
+    await add.click();
+  }
+  await expect(page.getByTestId("order-total")).toHaveText("77개");
+  await expect(page.locator(".queue-item")).toHaveCount(3);
+  await page.locator(".item-row").filter({ hasText: "오트밀크" }).click();
+  await page.getByRole("button", { name: "발주 목록에서 확인" }).click();
+  await expect(page.locator(".order-transfer text")).toHaveText("8");
+  await expect(page.locator(".order-transfer")).toHaveCount(0);
+  await page.getByRole("button", { name: "발주 목록에서 확인" }).click();
+  await expect(page.locator(".order-transfer")).toHaveCount(1);
+  await expect(page.locator(".queue-item")).toHaveCount(3);
+  await expect(page.locator(".order-transfer")).toHaveCount(0);
+  await page.getByRole("button", { name: "알림 닫기" }).click();
+  await page.screenshot({
+    path: "test-results/workspace-populated.png",
+    fullPage: true,
+  });
+});
+
+test("reduced-motion users keep order feedback without movement", async ({
+  page,
+}) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: "발주 목록에 추가", exact: true })
+    .click();
+  await expect(page.getByTestId("queue-oat")).toBeVisible();
+  await expect(page.locator(".order-transfer")).toBeHidden();
+  await expect(page.getByRole("status")).toContainText("발주 목록에 담았어요");
+  expect(
+    await page
+      .getByTestId("queue-oat")
+      .evaluate((node) => node.getAnimations().length),
+  ).toBe(0);
+});
