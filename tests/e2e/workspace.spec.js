@@ -111,7 +111,7 @@ test("create, validate, edit and delete item", async ({ page }) => {
   await expect(page.locator(".item-row")).toHaveCount(10);
   await expect(page.locator(".item-list")).not.toContainText("수정 우유");
 });
-for (const width of [1440, 1280, 1024]) {
+for (const width of [1600, 1440, 1280, 1024]) {
   test(`desktop layout and screenshot at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
     await page.goto("/");
@@ -132,7 +132,7 @@ for (const width of [1440, 1280, 1024]) {
     ).toBe(true);
     const overflow = await page
       .locator(
-        ".item-browser, .item-workspace, .order-queue, .item-row, .title-line",
+        ".item-browser, .item-workspace, .order-queue, .item-row, .title-line, .stock-surface, .suggested-section",
       )
       .evaluateAll((nodes) =>
         nodes

@@ -112,33 +112,37 @@ export default function ItemWorkspace({
           <StatusBadge item={item} />
         </div>
       </div>
-      <div className="stock-section">
-        <span className="eyebrow">CURRENT STOCK</span>
-        <QuantityControl
-          large
-          value={item.stock}
-          onChange={onStock}
-          label={`${item.name} 현재 재고`}
-        />
-        <span className="stock-unit">
-          보유 수량 <span>·</span> {item.unit} 기준
-        </span>
-      </div>
-      <StockRange item={item} />
-      <div className="thresholds">
-        <div>
-          <span>Minimum Stock</span>
-          <strong>
-            {item.minimum}
-            <small>최소 재고</small>
-          </strong>
+      <div className="stock-information">
+        <div className="stock-section">
+          <div className="stock-surface">
+            <span className="eyebrow">CURRENT STOCK</span>
+            <QuantityControl
+              large
+              value={item.stock}
+              onChange={onStock}
+              label={`${item.name} 현재 재고`}
+            />
+            <span className="stock-unit">
+              보유 수량 <span>·</span> {item.unit} 기준
+            </span>
+          </div>
         </div>
-        <div>
-          <span>Target Stock</span>
-          <strong>
-            {item.target}
-            <small>적정 재고</small>
-          </strong>
+        <StockRange item={item} />
+        <div className="thresholds">
+          <div>
+            <span>Minimum Stock</span>
+            <strong>
+              {item.minimum}
+              <small>최소 재고</small>
+            </strong>
+          </div>
+          <div>
+            <span>Target Stock</span>
+            <strong>
+              {item.target}
+              <small>적정 재고</small>
+            </strong>
+          </div>
         </div>
       </div>
       <div className="suggested-section">
