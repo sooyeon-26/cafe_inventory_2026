@@ -114,6 +114,104 @@ function assertMovement(movements, type, change, before, after) {
     }),
   ]));
 }
+
+async function holdNextRequest(page, url, method, fail = false) {
+  let release;
+  let markSeen;
+  let held = false;
+  const seen = new Promise((resolve) => { markSeen = resolve; });
+  const handler = async (route) => {
+    if (route.request().method() !== method || held) return route.continue();
+    held = true;
+    await new Promise((resolve) => { release = resolve; markSeen(); });
+    if (fail) return route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ error: { code: "UNAVAILABLE", message: "일시적 오류" } }),
+    });
+    return route.continue();
+  };
+  await page.route(url, handler);
+  return { seen, release: () => release(), remove: () => page.unroute(url, handler) };
+}
+
+test("rapid stock clicks stay optimistic and persist in order", async ({ page, request }) => {
+  await page.goto("/");
+  const gate = await holdNextRequest(page, "**/api/items/oat/movements", "POST");
+  const plus = page.getByRole("button", { name: "오트밀크 현재 재고 증가" });
+  await plus.click();
+  await gate.seen;
+  await plus.click();
+  await expect(page.getByRole("spinbutton", { name: "오트밀크 현재 재고", exact: true })).toHaveValue("4");
+  expect((await (await request.get("/api/items/oat")).json()).data.stock).toBe(2);
+  gate.release();
+  await expect.poll(async () => (await (await request.get("/api/items/oat")).json()).data.stock).toBe(4);
+  await gate.remove();
+  await page.reload();
+  await expect(page.getByRole("spinbutton", { name: "오트밀크 현재 재고", exact: true })).toHaveValue("4");
+  await expect(page.locator(".suggested-number")).toHaveText("6개");
+  const movements = (await (await request.get("/api/items/oat/movements")).json()).data;
+  expect(movements.filter((movement) => movement.type === "ADJUSTMENT")).toHaveLength(2);
+});
+
+test("failed stock and queue changes roll back with small feedback", async ({ page, request }) => {
+  await page.goto("/");
+  const stock = page.getByRole("spinbutton", { name: "오트밀크 현재 재고", exact: true });
+  const stockGate = await holdNextRequest(page, "**/api/items/oat/movements", "POST", true);
+  await page.getByRole("button", { name: "오트밀크 현재 재고 감소" }).click();
+  await stockGate.seen;
+  await expect(stock).toHaveValue("1");
+  stockGate.release();
+  await expect(stock).toHaveValue("2");
+  await expect(page.getByRole("alert")).toContainText("재고 변경을 저장하지 못했습니다.");
+  await stockGate.remove();
+  expect((await (await request.get("/api/items/oat/movements")).json()).data).toHaveLength(0);
+
+  const addGate = await holdNextRequest(page, "**/api/queue", "POST", true);
+  await page.getByRole("button", { name: "발주 목록에 추가" }).click();
+  await addGate.seen;
+  await expect(page.getByTestId("queue-oat")).toHaveCount(1);
+  addGate.release();
+  await expect(page.getByTestId("queue-oat")).toHaveCount(0);
+  await expect(page.getByRole("alert")).toContainText("발주 목록을 저장하지 못했습니다.");
+  await addGate.remove();
+
+  await page.getByRole("button", { name: "발주 목록에 추가" }).click();
+  await expect(page.getByRole("spinbutton", { name: "오트밀크 발주 수량" })).toHaveValue("8");
+  const quantityGate = await holdNextRequest(page, "**/api/queue/oat", "PATCH", true);
+  await page.getByRole("button", { name: "오트밀크 발주 수량 증가" }).click();
+  await quantityGate.seen;
+  await expect(page.getByRole("spinbutton", { name: "오트밀크 발주 수량" })).toHaveValue("9");
+  quantityGate.release();
+  await expect(page.getByRole("spinbutton", { name: "오트밀크 발주 수량" })).toHaveValue("8");
+  await quantityGate.remove();
+
+  const removeGate = await holdNextRequest(page, "**/api/queue/oat", "DELETE", true);
+  await page.getByRole("button", { name: "오트밀크 발주 목록에서 삭제" }).click();
+  await removeGate.seen;
+  await expect(page.getByTestId("queue-oat")).toHaveCount(0);
+  removeGate.release();
+  await expect(page.getByTestId("queue-oat")).toHaveCount(1);
+  await removeGate.remove();
+  await page.reload();
+  await expect(stock).toHaveValue("2");
+  await expect(page.getByRole("spinbutton", { name: "오트밀크 발주 수량" })).toHaveValue("8");
+});
+
+test("order creation waits for the server before clearing the draft", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "발주 목록에 추가" }).click();
+  await expect(page.getByTestId("queue-oat")).toHaveCount(1);
+  const gate = await holdNextRequest(page, "**/api/orders", "POST");
+  await page.getByRole("button", { name: "발주하기" }).click();
+  await gate.seen;
+  await expect(page.getByTestId("queue-oat")).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "발주 처리 중..." })).toBeDisabled();
+  gate.release();
+  await expect(page.getByTestId("queue-oat")).toHaveCount(0);
+  await gate.remove();
+});
+
 test("search, filters, queue removal and item selection", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("textbox", { name: "품목 검색" }).fill("바닐라");
@@ -237,7 +335,7 @@ test("legacy browser data does not override PostgreSQL items", async ({
 });
 
 test("load failure shows a retry without replacing the workspace", async ({ page }) => {
-  await page.route("**/api/state", (route) => route.fulfill({
+  await page.route("**/api/items", (route) => route.fulfill({
     status: 503,
     contentType: "application/json",
     body: JSON.stringify({ error: { code: "UNAVAILABLE", message: "일시적으로 연결할 수 없습니다." } }),
@@ -245,7 +343,7 @@ test("load failure shows a retry without replacing the workspace", async ({ page
   await page.goto("/");
   await expect(page.getByRole("alert")).toContainText("재고 정보를 불러오지 못했습니다.");
   await expect(page.locator(".workspace")).toBeVisible();
-  await page.unroute("**/api/state");
+  await page.unroute("**/api/items");
   await page.getByRole("button", { name: "다시 시도" }).click();
   await expect(page.getByRole("heading", { name: "오트밀크", exact: true })).toBeVisible();
   await expect(page.getByRole("alert")).toHaveCount(0);

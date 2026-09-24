@@ -17,6 +17,7 @@ export function QuantityControl({
   large = false,
   min = 0,
   disabled = false,
+  inputDisabled = false,
 }) {
   const inputRef = useRef(null);
   const previous = useRef(value);
@@ -55,7 +56,7 @@ export function QuantityControl({
         max={MAX_QUANTITY}
         step="1"
         value={value}
-        disabled={disabled}
+        disabled={disabled || inputDisabled}
         onChange={(event) => {
           if (event.target.value === "") return;
           const next = Number(event.target.value);

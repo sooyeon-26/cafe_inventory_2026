@@ -1122,6 +1122,10 @@ svg {
 .toast > span {
   color: #b1d1a4;
 }
+.toast.error {
+  background: #7b3730;
+  color: #fff;
+}
 .toast button {
   color: #d5dfd1;
   font-size: 19px;

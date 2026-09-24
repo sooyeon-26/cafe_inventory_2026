@@ -7,7 +7,7 @@ import OrderFlow from "./components/OrderFlow.jsx";
 import { History, ItemForm, Modal, MovementForm } from "./components/Dialogs.jsx";
 
 export default function App() {
-  const { state, act, loading, busy, error, retry } = useInventory();
+  const { state, act, loading, busy, saving, stockBusy, queueBusy, orderPending, error, actionError, retry } = useInventory();
   const [selectedId, setSelectedId] = useState(state.items[0]?.id);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
@@ -38,14 +38,14 @@ export default function App() {
   }, []);
   const notify = (text) => setToast({ text, id: crypto.randomUUID() });
   const addOrder = async () => {
-    const result = await act({ type: "queue-add", id: selected.id });
-    if (!result) return;
     setPulse({
       id: selected.id,
       key: crypto.randomUUID(),
-      quantity: result.quantity,
+      quantity: selected.recommendedQuantity,
     });
     if (window.innerWidth <= 1100) setQueueOpen(true);
+    const result = await act({ type: "queue-add", id: selected.id });
+    if (!result) return;
     notify(
       queued
         ? "이미 목록에 있어요. 발주 수량을 확인해 주세요."
@@ -101,7 +101,7 @@ export default function App() {
             </span>
             <span>
               <i className="live-dot" />
-              {error ? "저장 상태 확인 필요" : busy ? "저장 중..." : "변경사항이 자동으로 저장됩니다"}
+              {error ? "저장 상태 확인 필요" : saving ? "저장 중..." : "변경사항이 자동으로 저장됩니다"}
             </span>
           </div>
         </div>
@@ -127,16 +127,19 @@ export default function App() {
             item={selected}
             onStock={(value, source) => {
               if (source === "decrement") return act({
-                type: "movement", id: selected.id, input: { type: "USAGE", quantity: 1 },
+                type: "quick-stock", id: selected.id, input: { type: "USAGE", quantity: 1 },
               });
               if (source === "increment") return act({
-                type: "movement", id: selected.id, input: { type: "ADJUSTMENT", quantityChange: 1 },
+                type: "quick-stock", id: selected.id, input: { type: "ADJUSTMENT", quantityChange: 1 },
               });
+              if (stockBusy) return null;
               return act({ type: "stock", id: selected.id, value, movementType: "ADJUSTMENT" });
             }}
             onAdd={addOrder}
             queued={queued}
             disabled={busy || loading}
+            stockInputDisabled={stockBusy}
+            actionsDisabled={stockBusy || queueBusy}
             onEdit={() => setDialog("edit")}
             onDelete={() => setDialog("delete")}
             onMovement={() => setDialog("movement")}
@@ -158,6 +161,8 @@ export default function App() {
                 notify("데모 발주를 생성했어요. History에서 확인할 수 있습니다.");
             }}
             disabled={busy || loading}
+            orderDisabled={queueBusy}
+            orderPending={orderPending}
             open={queueOpen}
             onClose={() => setQueueOpen(false)}
             pulse={pulse}
@@ -188,6 +193,7 @@ export default function App() {
           </button>
         </div>
       )}
+      {actionError && <div className="toast error" role="alert">{actionError}</div>}
       {(dialog === "new" || dialog === "edit") && (
         <ItemForm
           item={dialog === "edit" ? selected : null}

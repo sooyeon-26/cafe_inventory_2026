@@ -37,6 +37,8 @@ test("item API persists CRUD, stock, queue and order changes in PostgreSQL", asy
     const items = await call("/items");
     assert.equal(items.status, 200);
     assert.ok(items.payload.data.some((item) => item.id === "oat"));
+    assert.deepEqual((await call("/queue")).payload.data, []);
+    assert.deepEqual((await call("/history")).payload.data, []);
     const oat = items.payload.data.find((item) => item.id === "oat");
     assert.equal(oat.leadTimeDays, 2);
     assert.equal(oat.averageDailyUsage, 0);
@@ -124,6 +126,7 @@ test("item API persists CRUD, stock, queue and order changes in PostgreSQL", asy
     await call(`/items/${id}/movements`, "POST", { type: "ADJUSTMENT", afterQuantity: 3 });
     const history = (await call("/state")).payload.data.history;
     assert.ok(history.some((event) => event.kind === "movement" && event.id === usage.payload.data.id));
+    assert.ok((await call("/history")).payload.data.some((event) => event.id === usage.payload.data.id));
 
     const countBeforeFailure = await prisma.stockMovement.count({ where: { itemId: id } });
     await prisma.$executeRawUnsafe('ALTER TABLE "StockMovement" ADD CONSTRAINT "StockMovement_rollback_test" CHECK ("note" <> \'rollback-probe\')');
@@ -144,6 +147,7 @@ test("item API persists CRUD, stock, queue and order changes in PostgreSQL", asy
     await call(`/queue/${id}`, "PATCH", { quantity: 7 });
     const persisted = await call("/state");
     assert.equal(persisted.payload.data.queue.find((entry) => entry.id === id).quantity, 7);
+    assert.equal((await call("/queue")).payload.data.find((entry) => entry.id === id).quantity, 7);
     const order = await call("/orders", "POST");
     assert.equal(order.status, 201);
     assert.equal(order.payload.data.lines[0].quantity, 7);

@@ -1,57 +1,219 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { inventoryApi } from "./api.js";
+import { queryKeys } from "./queryKeys.js";
 
 const emptyState = { items: [], queue: [], history: [] };
 
+function applyQueue(queue, action, result) {
+  if (action.type === "queue-add") {
+    if (queue.some((entry) => entry.id === action.id))
+      return result?.quantity === undefined ? queue : queue.map((entry) => entry.id === action.id
+        ? { ...entry, quantity: result.quantity } : entry);
+    return [...queue, { id: action.id, quantity: result?.quantity ?? action.quantity }];
+  }
+  if (action.type === "queue-quantity")
+    return queue.map((entry) => entry.id === action.id
+      ? { ...entry, quantity: result?.quantity ?? action.value } : entry);
+  return queue.filter((entry) => entry.id !== action.id);
+}
+
+function projectStock(item, operations) {
+  const change = operations.reduce((sum, operation) => sum + operation.delta, 0);
+  return {
+    ...item,
+    stock: item.stock + change,
+    recommendedQuantity: Math.max(item.recommendedQuantity - change, 0),
+    recommendationPending: operations.length > 0,
+  };
+}
+
 export function useInventory() {
-  const [state, setState] = useState(emptyState);
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const busyRef = useRef(false);
+  const client = useQueryClient();
+  const itemsQuery = useQuery({ queryKey: queryKeys.items, queryFn: inventoryApi.items });
+  const draftQuery = useQuery({ queryKey: queryKeys.draft, queryFn: inventoryApi.queue });
+  const historyQuery = useQuery({ queryKey: queryKeys.history, queryFn: inventoryApi.history });
+  const [actionError, setActionError] = useState("");
+  const chains = useRef(new Map());
+  const stockBase = useRef(new Map());
+  const stockPending = useRef(new Map());
+  const queueBase = useRef(null);
+  const queuePending = useRef([]);
 
-  const retry = useCallback(async () => {
-    setLoading(true);
-    setError("");
-    try {
-      setState(await inventoryApi.state());
-    } catch (cause) {
-      setError(`재고 정보를 불러오지 못했습니다. ${cause.message}`);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  useEffect(() => {
+    if (!actionError) return;
+    const timer = setTimeout(() => setActionError(""), 4500);
+    return () => clearTimeout(timer);
+  }, [actionError]);
 
-  useEffect(() => { retry(); }, [retry]);
+  const serial = (key, task) => {
+    const run = (chains.current.get(key) ?? Promise.resolve()).then(task);
+    const tail = run.catch(() => {});
+    chains.current.set(key, tail);
+    tail.then(() => {
+      if (chains.current.get(key) === tail) chains.current.delete(key);
+    });
+    return run;
+  };
 
-  const act = useCallback(async (action) => {
-    if (busyRef.current) return null;
-    busyRef.current = true;
-    setBusy(true);
-    setError("");
-    try {
-      let result;
+  const paintStock = (id) => {
+    const base = stockBase.current.get(id);
+    if (!base) return;
+    const projected = projectStock(base, stockPending.current.get(id) ?? []);
+    client.setQueryData(queryKeys.items, (items) => items?.map((item) =>
+      item.id === id ? projected : item));
+  };
+
+  const stockMutation = useMutation({
+    mutationFn: (action) => serial(`stock:${action.id}`,
+      () => inventoryApi.movement(action.id, action.input)),
+    onMutate: async (action) => {
+      await client.cancelQueries({ queryKey: queryKeys.items });
+      const previousItems = client.getQueryData(queryKeys.items);
+      const operations = stockPending.current.get(action.id) ?? [];
+      if (!operations.length) {
+        const item = previousItems?.find((entry) => entry.id === action.id);
+        if (item) stockBase.current.set(action.id, item);
+      }
+      const delta = action.input.type === "USAGE" ? -action.input.quantity : action.input.quantityChange;
+      const operation = { token: Symbol(), delta };
+      stockPending.current.set(action.id, [...operations, operation]);
+      paintStock(action.id);
+      return { previousItems, operation };
+    },
+    onSuccess: (movement, action, context) => {
+      const base = stockBase.current.get(action.id);
+      if (base) {
+        const difference = movement.afterQuantity - base.stock;
+        stockBase.current.set(action.id, {
+          ...base,
+          stock: movement.afterQuantity,
+          recommendedQuantity: Math.max(base.recommendedQuantity - difference, 0),
+        });
+      }
+      stockPending.current.set(action.id, (stockPending.current.get(action.id) ?? [])
+        .filter((entry) => entry !== context.operation));
+      paintStock(action.id);
+    },
+    onError: (_error, action, context) => {
+      stockPending.current.set(action.id, (stockPending.current.get(action.id) ?? [])
+        .filter((entry) => entry !== context?.operation));
+      if (!stockPending.current.get(action.id)?.length && context?.previousItems) {
+        const previous = context.previousItems.find((item) => item.id === action.id);
+        client.setQueryData(queryKeys.items, (items) => items?.map((item) =>
+          item.id === action.id ? previous : item));
+      }
+      else paintStock(action.id);
+      setActionError("재고 변경을 저장하지 못했습니다.");
+    },
+    onSettled: (_data, _error, action) => {
+      if (stockPending.current.get(action.id)?.length) return;
+      stockPending.current.delete(action.id);
+      stockBase.current.delete(action.id);
+      if (stockPending.current.size) return;
+      void client.invalidateQueries({ queryKey: queryKeys.items });
+      void client.invalidateQueries({ queryKey: queryKeys.history });
+      void client.invalidateQueries({ queryKey: queryKeys.movementsAll });
+    },
+  });
+
+  const paintQueue = () => {
+    if (!queueBase.current) return;
+    const projected = queuePending.current.reduce((queue, action) => applyQueue(queue, action), queueBase.current);
+    client.setQueryData(queryKeys.draft, projected);
+  };
+
+  const queueMutation = useMutation({
+    mutationFn: (action) => serial("draft", async () => {
+      if (action.type === "queue-add") {
+        await chains.current.get(`stock:${action.id}`);
+        return inventoryApi.queueAdd(action.id);
+      }
+      if (action.type === "queue-quantity") return inventoryApi.queueQuantity(action.id, action.value);
+      return inventoryApi.queueRemove(action.id);
+    }),
+    onMutate: async (action) => {
+      await client.cancelQueries({ queryKey: queryKeys.draft });
+      const previousDraft = client.getQueryData(queryKeys.draft);
+      if (!queuePending.current.length) queueBase.current = previousDraft ?? [];
+      const item = client.getQueryData(queryKeys.items)?.find((entry) => entry.id === action.id);
+      const operation = { ...action, quantity: item?.recommendedQuantity ?? 0, token: Symbol() };
+      queuePending.current.push(operation);
+      paintQueue();
+      return { previousDraft, operation };
+    },
+    onSuccess: (result, _action, context) => {
+      queueBase.current = applyQueue(queueBase.current, context.operation, result);
+      queuePending.current = queuePending.current.filter((entry) => entry !== context.operation);
+      paintQueue();
+    },
+    onError: (_error, _action, context) => {
+      queuePending.current = queuePending.current.filter((entry) => entry !== context?.operation);
+      if (!queuePending.current.length && context?.previousDraft)
+        client.setQueryData(queryKeys.draft, context.previousDraft);
+      else paintQueue();
+      setActionError("발주 목록을 저장하지 못했습니다.");
+    },
+    onSettled: () => {
+      if (queuePending.current.length) return;
+      queueBase.current = null;
+      void client.invalidateQueries({ queryKey: queryKeys.draft });
+    },
+  });
+
+  const criticalMutation = useMutation({
+    mutationFn: (action) => {
       switch (action.type) {
-        case "stock": result = await inventoryApi.stock(action.id, action.value, action.movementType); break;
-        case "movement": result = await inventoryApi.movement(action.id, action.input); break;
-        case "save": result = await inventoryApi.save(action.item); break;
-        case "delete": result = await inventoryApi.delete(action.id); break;
-        case "queue-add": result = await inventoryApi.queueAdd(action.id); break;
-        case "queue-quantity": result = await inventoryApi.queueQuantity(action.id, action.value); break;
-        case "queue-remove": result = await inventoryApi.queueRemove(action.id); break;
-        case "order": result = await inventoryApi.order(); break;
+        case "stock": return inventoryApi.stock(action.id, action.value, action.movementType);
+        case "movement": return inventoryApi.movement(action.id, action.input);
+        case "save": return inventoryApi.save(action.item);
+        case "delete": return inventoryApi.delete(action.id);
+        case "order": return inventoryApi.order();
         default: throw new Error("지원하지 않는 작업입니다.");
       }
-      setState(await inventoryApi.state());
-      return result;
-    } catch (cause) {
-      setError(`변경사항을 저장하지 못했습니다. ${cause.message}`);
-      return null;
-    } finally {
-      busyRef.current = false;
-      setBusy(false);
-    }
-  }, []);
+    },
+    onSuccess: async (_result, action) => {
+      const keys = action.type === "order"
+        ? [queryKeys.orders, queryKeys.history]
+        : action.type === "delete"
+          ? [queryKeys.items, queryKeys.draft, queryKeys.history]
+          : action.type === "save"
+            ? [queryKeys.items, queryKeys.history]
+            : [queryKeys.items, queryKeys.history, queryKeys.movements(action.id)];
+      await Promise.all(keys.map((queryKey) => client.invalidateQueries({ queryKey })));
+    },
+    onError: (_error, action) => setActionError(action.type === "order"
+      ? "발주를 처리하지 못했습니다." : "변경사항을 저장하지 못했습니다."),
+  });
 
-  return { state, act, loading, busy, error, retry };
+  const act = async (action) => {
+    setActionError("");
+    try {
+      if (action.type === "queue-add" || action.type === "queue-quantity" || action.type === "queue-remove")
+        return await queueMutation.mutateAsync(action);
+      if (action.type === "quick-stock") return await stockMutation.mutateAsync(action);
+      return await criticalMutation.mutateAsync(action);
+    } catch {
+      return null;
+    }
+  };
+
+  const loading = itemsQuery.isPending || draftQuery.isPending || historyQuery.isPending;
+  const loadError = itemsQuery.error || draftQuery.error || historyQuery.error;
+  const state = itemsQuery.data && draftQuery.data && historyQuery.data
+    ? { items: itemsQuery.data, queue: draftQuery.data, history: historyQuery.data }
+    : emptyState;
+  return {
+    state,
+    act,
+    loading,
+    busy: criticalMutation.isPending,
+    orderPending: criticalMutation.isPending && criticalMutation.variables?.type === "order",
+    saving: criticalMutation.isPending || stockMutation.isPending || queueMutation.isPending,
+    stockBusy: stockPending.current.size > 0,
+    queueBusy: queuePending.current.length > 0,
+    error: loadError ? `재고 정보를 불러오지 못했습니다. ${loadError.message}` : "",
+    actionError,
+    retry: () => Promise.all([itemsQuery.refetch(), draftQuery.refetch(), historyQuery.refetch()]),
+  };
 }

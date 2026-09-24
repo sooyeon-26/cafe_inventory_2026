@@ -34,6 +34,7 @@ API의 성공 응답은 `{ "data": ... }`, 오류 응답은 `{ "error": { "code"
 | --- | --- | --- |
 | GET | `/health` | DB 연결 확인 |
 | GET | `/state` | 화면의 품목·대기열·History 조회 |
+| GET | `/history` | 활동 및 재고 변경 이력 조회 |
 | GET | `/items` | 전체 품목 조회 |
 | GET | `/items/:id` | 단일 품목 조회 |
 | POST | `/items` | 품목 등록 |
@@ -43,6 +44,7 @@ API의 성공 응답은 `{ "data": ... }`, 오류 응답은 `{ "error": { "code"
 | GET | `/items/:id/movements` | 품목의 재고 변경 내역 |
 | GET | `/movements` | 전체 재고 변경 내역 (`itemId`, `type` 필터 선택) |
 | DELETE | `/items/:id` | 품목 숨김 및 대기열 항목 삭제 (Movement 보존) |
+| GET | `/queue` | 발주 대기열 조회 |
 | POST | `/queue` | 발주 대기열 추가 |
 | PATCH | `/queue/:id` | 발주 수량 수정 |
 | DELETE | `/queue/:id` | 발주 대기열 제거 |
@@ -51,6 +53,12 @@ API의 성공 응답은 `{ "data": ... }`, 오류 응답은 `{ "error": { "code"
 품목 응답에는 `leadTimeDays`, `averageDailyUsage`, `estimatedDaysUntilStockout`, `reorderStatus`, `recommendedQuantity`, `reorderReason`이 포함됩니다. 수량은 0~999,999의 정수이고 발주 수량은 1 이상이며 적정 재고는 최소 재고 이상이어야 합니다. 발주는 입고를 의미하지 않으므로 재고를 변경하지 않습니다. 브라우저의 과거 `cafe-inventory:v1` localStorage 값은 읽거나 덮어쓰지 않습니다. 기존 브라우저에만 있던 사용자 지정 데이터가 있다면 별도로 내보낸 뒤 API로 이전해야 합니다.
 
 `POST /items/:id/movements`는 사용·입고·폐기에 `{ "type": "USAGE", "quantity": 2, "note": "오전 사용" }`처럼 양수 수량을 받고, 수동 조정에는 `{ "type": "ADJUSTMENT", "afterQuantity": 8 }` 또는 `{ "type": "ADJUSTMENT", "quantityChange": 1 }`을 받습니다. 빠른 조정과 기존 `PATCH /items/:id/stock`도 Movement를 생성합니다. History의 새 재고 항목은 Movement에서 읽으며, 이전 문자열 활동 기록은 그대로 남습니다.
+
+## 프론트엔드 서버 상태
+
+TanStack Query가 품목 `['items']`, 발주 대기열 `['orders', 'draft']`, History `['history']`를 각각 캐시합니다. `src/queryKeys.js`에 품목 상세·Movement·주문 키도 같은 규칙으로 정의했습니다. 검색어, 필터, 선택 품목, 열려 있는 창은 React의 화면 상태로 유지합니다. 기존 `/state` API는 호환성을 위해 남겨두고, 화면은 범위별 조회 API를 사용합니다.
+
+현재고 `+/-`와 대기열 추가·수량 변경·삭제는 요청 전에 캐시를 갱신합니다. 실패하면 변경 전 스냅샷과 아직 대기 중인 작업을 기준으로 복원하고 작은 오류 알림을 표시합니다. 같은 품목의 빠른 재고 클릭과 대기열 변경 요청은 순서대로 전송합니다. 재고 추천값은 대기 중에 수량 차이만 임시 반영하고 서버 조회 결과로 확정합니다. 재고 변경은 품목·History·Movement, 대기열 변경은 draft만 다시 확인합니다. 품목 등록·수정·삭제, 상세 재고 변경, 데모 발주 생성은 서버 응답 후 갱신하며 낙관적으로 완료 처리하지 않습니다.
 
 ## 테스트
 
@@ -65,13 +73,13 @@ npx playwright install chromium
 npm run test:e2e
 ```
 
-브라우저 테스트는 테스트 DB에 연결한 API와 프론트엔드를 자동으로 실행하고, Movement 유형과 History, 새로고침 후 유지, 품목 CRUD, 발주·필터·반응형 레이아웃을 확인합니다. API 테스트는 변경 전후 수량, 동시 요청의 순서, Movement 저장 실패 시 전체 롤백도 확인합니다.
+브라우저 테스트는 테스트 DB에 연결한 API와 프론트엔드를 자동으로 실행하고, Movement 유형과 History, 새로고침 후 유지, 품목 CRUD, 발주·필터·반응형 레이아웃을 확인합니다. 응답 지연 및 실패를 주입해 빠른 재고 클릭, 대기열 즉시 반영과 rollback도 확인합니다. API 테스트는 변경 전후 수량, 동시 요청의 순서, Movement 저장 실패 시 전체 롤백도 확인합니다.
 
 ## 구조
 
 - `prisma/schema.prisma`, `prisma/migrations/`, `prisma/seed.js`: PostgreSQL 모델, migration, 데모 품목
 - `server/app.js`, `server/index.js`, `server/reorder.js`: Express API, 서버 실행, 사용량 기반 추천 계산
-- `src/api.js`, `src/useInventory.js`: API 호출과 화면 로딩·저장·오류 상태
+- `src/api.js`, `src/queryKeys.js`, `src/useInventory.js`: API 호출, Query 캐시와 mutation, 화면 오류 상태
 - `src/App.jsx`, `src/components/`: 기존 워크스페이스 화면과 인터랙션
 - `src/inventory.js`: 서버가 제공한 발주 상태에 따른 화면 필터
 - `tests/`: 계산 단위 테스트, API 및 브라우저 통합 테스트

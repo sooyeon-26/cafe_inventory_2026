@@ -71,6 +71,13 @@ async function itemResponses(db, items) {
   return items.map((item) => ({ ...itemResponse(item), ...recommendations.get(item.id) }));
 }
 
+const historyResponse = (activity, movements) => [
+  ...activity.map((event) => ({ ...event, kind: "activity" })),
+  ...movements.map((movement) => ({ ...movement, kind: "movement", date: movement.createdAt })),
+].sort((a, b) => b.date - a.date);
+
+const queueResponse = (queue) => queue.map((entry) => ({ id: entry.itemId, quantity: entry.quantity }));
+
 function movementNote(value) {
   if (value === undefined || value === null || value === "") return null;
   if (typeof value !== "string" || value.trim().length > 240)
@@ -164,15 +171,18 @@ export function createApp(prisma) {
       ]);
       return { queue, activity, movements, itemData: await itemResponses(tx, items) };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
-    const history = [
-      ...activity.map((event) => ({ ...event, kind: "activity" })),
-      ...movements.map((movement) => ({ ...movement, kind: "movement", date: movement.createdAt })),
-    ].sort((a, b) => b.date - a.date);
     res.json({ data: {
       items: itemData,
-      queue: queue.map((entry) => ({ id: entry.itemId, quantity: entry.quantity })),
-      history,
+      queue: queueResponse(queue),
+      history: historyResponse(activity, movements),
     } });
+  });
+  router.get("/history", async (_req, res) => {
+    const [activity, movements] = await prisma.$transaction([
+      prisma.activityEvent.findMany({ orderBy: { date: "desc" } }),
+      prisma.stockMovement.findMany({ orderBy: { createdAt: "desc" } }),
+    ], { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+    res.json({ data: historyResponse(activity, movements) });
   });
   router.get("/items", async (_req, res) => {
     const items = await prisma.item.findMany({ where: { deletedAt: null }, orderBy: { createdAt: "asc" } });
@@ -261,6 +271,10 @@ export function createApp(prisma) {
       await tx.activityEvent.create({ data: { text: `${item.name} · 품목 삭제` } });
     });
     res.json({ data: { id: req.params.id } });
+  });
+  router.get("/queue", async (_req, res) => {
+    const queue = await prisma.queueEntry.findMany({ orderBy: { createdAt: "asc" } });
+    res.json({ data: queueResponse(queue) });
   });
   router.post("/queue", async (req, res) => {
     if (!req.body || Object.keys(req.body).length !== 1 || typeof req.body.id !== "string")

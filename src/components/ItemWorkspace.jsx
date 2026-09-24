@@ -78,6 +78,8 @@ export default function ItemWorkspace({
   onDelete,
   onMovement,
   disabled = false,
+  stockInputDisabled = false,
+  actionsDisabled = false,
 }) {
   if (!item)
     return (
@@ -93,11 +95,11 @@ export default function ItemWorkspace({
       <div className="detail-topline">
         <span className="eyebrow">ITEM WORKSPACE</span>
         <div className="item-actions">
-          <button onClick={onMovement} disabled={disabled}>재고 변경</button>
+          <button onClick={onMovement} disabled={disabled || actionsDisabled}>재고 변경</button>
           <span>/</span>
-          <button onClick={onEdit} disabled={disabled}>품목 수정</button>
+          <button onClick={onEdit} disabled={disabled || actionsDisabled}>품목 수정</button>
           <span>/</span>
-          <button onClick={onDelete} disabled={disabled}>삭제</button>
+          <button onClick={onDelete} disabled={disabled || actionsDisabled}>삭제</button>
         </div>
       </div>
       <div className="item-title" key={item.id}>
@@ -121,6 +123,7 @@ export default function ItemWorkspace({
               onChange={onStock}
               label={`${item.name} 현재 재고`}
               disabled={disabled}
+              inputDisabled={stockInputDisabled}
             />
             <span className="stock-unit">
               보유 수량 <span>·</span> {item.unit} 기준
@@ -155,7 +158,7 @@ export default function ItemWorkspace({
             {suggested}
             <span>개</span>
           </div>
-          <p>{item.reorderReason}</p>
+          <p>{item.recommendationPending ? "추천 계산 중..." : item.reorderReason}</p>
         </div>
         <div className="reorder-metrics">
           <span>최근 7일 평균 사용 <strong>{item.averageDailyUsage.toFixed(1)}개/일</strong></span>

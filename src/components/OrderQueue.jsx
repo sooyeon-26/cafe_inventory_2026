@@ -13,15 +13,19 @@ export default function OrderQueue({
   onClose,
   pulse,
   disabled = false,
+  orderDisabled = false,
+  orderPending = false,
 }) {
   const panel = useRef(null);
+  const playedPulse = useRef(null);
   useEffect(() => {
-    if (!pulse) return;
+    if (!pulse || playedPulse.current === pulse.key) return;
     const row = [...panel.current.querySelectorAll("[data-item-id]")].find(
       (node) => node.dataset.itemId === pulse.id,
     );
     // Scroll only the queue, without moving the whole workspace.
     if (row) {
+      playedPulse.current = pulse.key;
       const list = row.parentElement;
       const top =
         row.getBoundingClientRect().top - list.getBoundingClientRect().top;
@@ -36,7 +40,7 @@ export default function OrderQueue({
           { duration: 650, easing: "ease-out" },
         );
     }
-  }, [pulse]);
+  }, [pulse, queue]);
   useEffect(() => {
     if (!open) return;
     const previous = document.activeElement;
@@ -97,6 +101,7 @@ export default function OrderQueue({
         <div className="queue-list">
           {queue.map((entry) => {
             const item = items.find((item) => item.id === entry.id);
+            if (!item) return null;
             return (
               <article
                 key={entry.id}
@@ -162,10 +167,10 @@ export default function OrderQueue({
           </div>
           <button
             className="primary create-order"
-            disabled={disabled || !queue.length}
+            disabled={disabled || orderDisabled || !queue.length}
             onClick={onOrder}
           >
-            발주하기
+            {orderPending ? "발주 처리 중..." : "발주하기"}
           </button>
           <p>데모 발주로 기록되며 실제 주문은 전송되지 않습니다.</p>
         </div>

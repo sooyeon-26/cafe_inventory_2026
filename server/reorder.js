@@ -52,8 +52,9 @@ export function calculateRecommendation(item, totalUsage) {
   };
 }
 
-export async function recommendationsForItems(db, items, now = new Date()) {
+export async function recommendationsForItems(db, items) {
   if (!items.length) return new Map();
+  const [{ now }] = await db.$queryRaw`SELECT CURRENT_TIMESTAMP AS now`;
   const totals = await db.stockMovement.groupBy({
     by: ["itemId"],
     where: {
