@@ -14,7 +14,13 @@ npm run db:seed
 npm run dev
 ```
 
-`npm run dev`는 API(`http://127.0.0.1:3001`)와 Vite 프론트엔드(`http://127.0.0.1:5173`)를 함께 실행합니다. 각각 실행하려면 `npm run dev:backend`와 `npm run dev:frontend`를 별도 터미널에서 사용하세요. Vite 개발 서버는 `/api` 요청을 백엔드로 전달합니다. 배포 시에도 프론트엔드의 `/api` 요청을 API 서버로 라우팅해야 합니다.
+`npm run dev`는 API(`http://127.0.0.1:3001`)와 Vite 프론트엔드(`http://127.0.0.1:5173`)를 함께 실행합니다. 각각 실행하려면 `npm run dev:backend`와 `npm run dev:frontend`를 별도 터미널에서 사용하세요. Vite 개발 서버는 `/api` 요청을 백엔드로 전달합니다.
+
+### Vercel 배포
+
+`vercel.json`은 Vite 정적 파일과 `/api` 요청을 처리하는 `api/index.js`를 함께 배포합니다. API는 기존 Express 앱을 재사용합니다. 빌드 시 Prisma Client를 생성하며, 로컬 `.env`는 업로드하지 않습니다.
+
+Vercel 프로젝트에 클라우드 PostgreSQL의 `DATABASE_URL`을 설정해야 합니다. 로컬 `127.0.0.1` DB는 Vercel에서 접근할 수 없습니다. 최초 배포 전, 대상 클라우드 DB 연결을 명시적으로 설정한 환경에서 `npm run db:deploy`로 마이그레이션을 적용하세요. 기존 로컬 데이터는 자동 복사하거나 초기화하지 않습니다. DB 준비 후 `npx vercel --prod`로 배포하고 `/api/health` 및 품목 조회를 확인하세요.
 
 개발 중 스키마를 수정할 때는 `npm run db:migrate -- --name <변경명>`으로 migration을 생성·적용합니다. 기존 migration만 적용할 때는 `npm run db:deploy`를 사용합니다. 주문 상태 migration은 기존 발주를 `ORDERED`로 유지합니다. `npm run db:seed`는 현재 데모 품목 10개를 ID 기준으로 upsert하고 기존 수정 값은 덮어쓰지 않아 반복 실행해도 중복 생성되지 않습니다. 포트폴리오 시연용 데이터는 기본 seed 실행 후 `npm run db:seed:showcase`로 선택적으로 추가합니다. 프론트엔드 빌드는 `npm run build`, 빌드 결과 미리보기는 `npm run preview`입니다.
 
