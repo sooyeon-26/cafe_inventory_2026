@@ -20,6 +20,12 @@ npm run dev
 
 ## 데이터와 API
 
+`Item.openingStock`은 Movement 기록을 시작할 때의 잔액입니다. Migration은 Movement가 있으면 가장 오래된 기록의 변경 전 수량, 없으면 기존 `stock`을 시작 잔액으로 저장하며 현재고는 바꾸지 않습니다. `npm run db:audit:stock`은 삭제 처리된 품목까지 포함해 `openingStock + Σ quantityChange = stock`과 Movement 전후 수량의 연결을 읽기 전용으로 검사하고, 불일치가 있으면 종료 코드 1을 반환합니다. DB 제약은 품목·발주 수량의 범위와 Movement 전후 수량·변경 방향을 검사합니다.
+
+추천 계산의 기준 시각을 주입할 수 있어 최근 7×24시간 경계와 자정 동작을 고정 시각으로 테스트합니다. `npm run db:reset:showcase`는 시연용 두 품목의 사용 이력 7일치를 현재 시각 기준으로 다시 생성합니다. 해당 품목의 재고가 바뀌었거나 시연용이 아닌 Movement가 있으면 안전하게 중단하고 다른 품목 기록은 수정하지 않습니다.
+
+새 `ActivityEvent`는 `type`과 관련 `itemId` 또는 `orderId`를 저장합니다. 이전 문자열 기록은 `LEGACY` 유형으로 보존하며 관계 ID를 임의로 추정하지 않습니다. `GET /history`는 선택적 `itemId`·`orderId` 필터를 지원하며 재고 Movement도 같은 기준으로 조회합니다. 서버는 입력 검증, 재고 변경, 발주 전환을 각각 별도 모듈에서 처리하고 프론트엔드는 조회와 변경 훅을 분리합니다.
+
 발주 품목은 `OrderLine` 관계형 테이블에 품목 ID, 발주 시점 이름·단위, 발주 수량, 누적 입고 수량으로 저장합니다. Migration은 기존 `Order.lines` JSON을 이 테이블로 옮기며, 기존 `RECEIVED`·`COMPLETED` 주문의 누적 입고량은 발주량과 같게 기록합니다. `ORDERED` 주문은 미입고로 유지하고 기존 재고 및 Movement는 변경하지 않습니다.
 
 입고는 일부 품목 또는 일부 수량만 처리할 수 있습니다. `ORDERED` → `PARTIALLY_RECEIVED` → `RECEIVED` → `COMPLETED` 순서이며 전량 입고되기 전에는 완료할 수 없습니다. 주문·품목 행을 잠근 한 트랜잭션에서 `OrderLine.receivedQuantity`, 현재고, 주문 상태, 주문 ID가 연결된 `RESTOCK` Movement를 함께 저장합니다. `POST /orders/:id/receive`에 `{ "lines": [{ "itemId": "oat", "quantity": 6 }] }`을 보내면 선택 수량만 입고하고, 본문을 생략하면 남은 수량을 모두 입고합니다. 잔여량 초과와 중복 입고는 거부합니다.
@@ -40,7 +46,7 @@ API의 성공 응답은 `{ "data": ... }`, 오류 응답은 `{ "error": { "code"
 | --- | --- | --- |
 | GET | `/health` | DB 연결 확인 |
 | GET | `/state` | 호환용 품목·대기열·최근 History 20건 조회 |
-| GET | `/history?limit=20&cursor=...` | 활동 및 재고 변경 이력 커서 조회 (`entries`, `nextCursor`, `hasMore`) |
+| GET | `/history?limit=20&cursor=...&itemId=...&orderId=...` | 활동 및 재고 변경 이력 커서 조회·선택 필터 (`entries`, `nextCursor`, `hasMore`) |
 | GET | `/items` | 전체 품목 조회 |
 | GET | `/items/:id` | 단일 품목 조회 |
 | POST | `/items` | 품목 등록 |
@@ -88,8 +94,9 @@ npm run test:e2e
 ## 구조
 
 - `prisma/schema.prisma`, `prisma/migrations/`, `prisma/seed.js`: PostgreSQL 모델, migration, 데모 품목
-- `server/app.js`, `server/index.js`, `server/reorder.js`: Express API, 서버 실행, 사용량 기반 추천 계산
-- `src/api.js`, `src/queryKeys.js`, `src/useInventory.js`: API 호출, Query 캐시와 mutation, 화면 오류 상태
+- `prisma/audit-stock.js`, `prisma/showcase-seed.js`: 재고 잔액 검사와 시연 이력 생성·재생성
+- `server/app.js`, `server/index.js`, `server/validation.js`, `server/inventory-service.js`, `server/order-service.js`, `server/reorder.js`: Express 라우트, 검증, 재고·발주 트랜잭션, 추천 계산
+- `src/api.js`, `src/queryKeys.js`, `src/useInventory.js`, `src/useInventoryMutations.js`: API 호출, Query 조회·변경 캐시, 화면 오류 상태
 - `src/App.jsx`, `src/components/`: 기존 워크스페이스 화면과 인터랙션
 - `src/inventory.js`: 서버가 제공한 발주 상태에 따른 화면 필터
 - `tests/`: 계산 단위 테스트, API 및 브라우저 통합 테스트

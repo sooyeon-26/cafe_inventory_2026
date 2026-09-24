@@ -55,15 +55,20 @@ export function calculateRecommendation(item, totalUsage) {
   };
 }
 
-export async function recommendationsForItems(db, items) {
+export function usageWindow(asOf) {
+  if (!(asOf instanceof Date) || !Number.isFinite(asOf.getTime())) throw new TypeError("Valid asOf date required");
+  return { gte: new Date(asOf.getTime() - USAGE_WINDOW_DAYS * DAY_MS), lte: asOf };
+}
+
+export async function recommendationsForItems(db, items, asOf) {
   if (!items.length) return new Map();
-  const [{ now }] = await db.$queryRaw`SELECT CURRENT_TIMESTAMP AS now`;
+  const now = asOf ?? (await db.$queryRaw`SELECT CURRENT_TIMESTAMP AS now`)[0].now;
   const totals = await db.stockMovement.groupBy({
     by: ["itemId"],
     where: {
       itemId: { in: items.map((item) => item.id) },
       type: "USAGE",
-      createdAt: { gte: new Date(now.getTime() - USAGE_WINDOW_DAYS * DAY_MS), lte: now },
+      createdAt: usageWindow(now),
     },
     _sum: { quantityChange: true },
   });

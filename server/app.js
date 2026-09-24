@@ -1,58 +1,9 @@
 import express from "express";
 import { Prisma } from "@prisma/client";
-import { MAX_QUANTITY } from "../src/inventory.js";
 import { recommendationsForItems } from "./reorder.js";
-
-const itemFields = ["name", "category", "unit", "stock", "minimum", "target", "leadTimeDays"];
-const textLimits = { name: 60, category: 30, unit: 20 };
-const movementTypes = new Set(["USAGE", "RESTOCK", "WASTE", "ADJUSTMENT"]);
-
-class HttpError extends Error {
-  constructor(status, code, message) {
-    super(message);
-    this.status = status;
-    this.code = code;
-  }
-}
-
-const badRequest = (message) => new HttpError(400, "VALIDATION_ERROR", message);
-const notFound = (message) => new HttpError(404, "NOT_FOUND", message);
-const conflict = (message) => new HttpError(409, "CONFLICT", message);
-const quantity = (value, field, min = 0) => {
-  if (!Number.isSafeInteger(value) || value < min || value > MAX_QUANTITY)
-    throw badRequest(`${field}은(는) ${min}~${MAX_QUANTITY} 사이 정수여야 합니다.`);
-  return value;
-};
-
-function itemInput(body, previous) {
-  if (!body || typeof body !== "object" || Array.isArray(body))
-    throw badRequest("품목 정보를 입력해 주세요.");
-  if (Object.keys(body).some((key) => !itemFields.includes(key)))
-    throw badRequest("지원하지 않는 품목 필드가 있습니다.");
-  if (!previous && itemFields.some((key) => key !== "leadTimeDays" && !(key in body)))
-    throw badRequest("품목 정보를 모두 입력해 주세요.");
-  if (previous && !Object.keys(body).length)
-    throw badRequest("수정할 필드를 입력해 주세요.");
-
-  const data = {};
-  for (const key of itemFields) {
-    if (!(key in body)) continue;
-    if (key in textLimits) {
-      const value = body[key];
-      if (typeof value !== "string" || !value.trim() || value.trim().length > textLimits[key])
-        throw badRequest(`${key}은(는) 1~${textLimits[key]}자여야 합니다.`);
-      data[key] = value.trim();
-    } else if (key === "leadTimeDays") {
-      data[key] = quantity(body[key], key, 1);
-      if (data[key] > 365) throw badRequest("leadTimeDays는 1~365일이어야 합니다.");
-    } else {
-      data[key] = quantity(body[key], key);
-    }
-  }
-  if ((data.target ?? previous?.target) < (data.minimum ?? previous?.minimum))
-    throw badRequest("적정 재고는 최소 재고 이상이어야 합니다.");
-  return data;
-}
+import { HttpError, badRequest, notFound, quantity, movementType, movementNote } from "./validation.js";
+import { createItem, updateItem, updateStock, createMovement, deleteItem } from "./inventory-service.js";
+import { orderInclude, orderResponse, createOrder, receiveOrder, completeOrder } from "./order-service.js";
 
 const itemResponse = (item) => ({
   id: item.id,
@@ -91,7 +42,7 @@ function decodeHistoryCursor(value) {
   }
 }
 
-async function historyPage(db, cursor, limit) {
+async function historyPage(db, cursor, limit, filter = {}) {
   const activityWhere = cursor?.kind === "activity"
     ? { OR: [{ date: { lt: cursor.date } }, { date: cursor.date, id: { gt: cursor.id } }] }
     : cursor ? { date: { lt: cursor.date } } : undefined;
@@ -99,8 +50,8 @@ async function historyPage(db, cursor, limit) {
     ? { OR: [{ createdAt: { lt: cursor.date } }, { createdAt: cursor.date, id: { gt: cursor.id } }] }
     : cursor ? { createdAt: { lte: cursor.date } } : undefined;
   const [activity, movements] = await Promise.all([
-    db.activityEvent.findMany({ where: activityWhere, orderBy: [{ date: "desc" }, { id: "asc" }], take: limit + 1 }),
-    db.stockMovement.findMany({ where: movementWhere, orderBy: [{ createdAt: "desc" }, { id: "asc" }], take: limit + 1 }),
+    db.activityEvent.findMany({ where: { ...activityWhere, ...filter }, orderBy: [{ date: "desc" }, { id: "asc" }], take: limit + 1 }),
+    db.stockMovement.findMany({ where: { ...movementWhere, ...filter }, orderBy: [{ createdAt: "desc" }, { id: "asc" }], take: limit + 1 }),
   ]);
   const combined = historyResponse(activity, movements);
   const entries = combined.slice(0, limit);
@@ -111,95 +62,6 @@ async function historyPage(db, cursor, limit) {
 }
 
 const queueResponse = (queue) => queue.map((entry) => ({ id: entry.itemId, quantity: entry.quantity }));
-const orderInclude = { lines: { orderBy: { position: "asc" } } };
-const orderResponse = (order) => ({
-  ...order,
-  lines: order.lines.map(({ itemId, name, unit, orderedQuantity, receivedQuantity }) => ({
-    itemId, name, unit, quantity: orderedQuantity, receivedQuantity,
-    remainingQuantity: orderedQuantity - receivedQuantity,
-  })),
-});
-
-function movementNote(value) {
-  if (value === undefined || value === null || value === "") return null;
-  if (typeof value !== "string" || value.trim().length > 240)
-    throw badRequest("메모는 240자 이하여야 합니다.");
-  return value.trim() || null;
-}
-
-function movementType(value) {
-  if (!movementTypes.has(value)) throw badRequest("올바른 재고 변경 유형을 선택해 주세요.");
-  return value;
-}
-
-function assertMovementDirection(type, change) {
-  if (!change) throw badRequest("재고 변경량은 0일 수 없습니다.");
-  if (type === "RESTOCK" && change < 0)
-    throw badRequest("입고 수량은 증가해야 합니다.");
-  if ((type === "USAGE" || type === "WASTE") && change > 0)
-    throw badRequest("사용·폐기 수량은 감소해야 합니다.");
-}
-
-async function activeItemForUpdate(tx, id) {
-  const rows = await tx.$queryRaw`SELECT "id" FROM "Item" WHERE "id" = ${id} AND "deletedAt" IS NULL FOR UPDATE`;
-  if (!rows.length) throw notFound("품목을 찾을 수 없습니다.");
-  return tx.item.findUnique({ where: { id } });
-}
-
-async function orderForUpdate(tx, id) {
-  const rows = await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id" = ${id} FOR UPDATE`;
-  if (!rows.length) throw notFound("발주를 찾을 수 없습니다.");
-  return tx.order.findUnique({ where: { id }, include: orderInclude });
-}
-
-async function recordStockChange(tx, item, { type, afterQuantity, note, orderId }, allowNoChange = false) {
-  quantity(afterQuantity, "stock");
-  const quantityChange = afterQuantity - item.stock;
-  if (!quantityChange && allowNoChange) return { item, movement: null };
-  assertMovementDirection(type, quantityChange);
-  const updated = await tx.item.update({ where: { id: item.id }, data: { stock: afterQuantity } });
-  const movement = await tx.stockMovement.create({ data: {
-    itemId: item.id,
-    itemName: item.name,
-    type,
-    quantityChange,
-    beforeQuantity: item.stock,
-    afterQuantity,
-    note,
-    ...(orderId ? { orderId } : {}),
-  } });
-  return { item: updated, movement };
-}
-
-function movementInput(body, currentStock) {
-  if (!body || typeof body !== "object" || Array.isArray(body))
-    throw badRequest("재고 변경 정보를 입력해 주세요.");
-  const type = movementType(body.type);
-  const allowed = type === "ADJUSTMENT"
-    ? ["type", "afterQuantity", "quantityChange", "note"]
-    : ["type", "quantity", "note"];
-  if (Object.keys(body).some((key) => !allowed.includes(key)))
-    throw badRequest("지원하지 않는 재고 변경 필드가 있습니다.");
-  let afterQuantity;
-  if (type === "ADJUSTMENT") {
-    if (("afterQuantity" in body) === ("quantityChange" in body))
-      throw badRequest("변경 후 수량 또는 변경량 중 하나만 입력해 주세요.");
-    if ("quantityChange" in body) {
-      const change = body.quantityChange;
-      if (!Number.isSafeInteger(change) || !change || Math.abs(change) > MAX_QUANTITY)
-        throw badRequest("변경량은 0이 아닌 정수여야 합니다.");
-      afterQuantity = currentStock + change;
-    } else {
-      afterQuantity = quantity(body.afterQuantity, "afterQuantity");
-    }
-  } else {
-    afterQuantity = currentStock + (type === "RESTOCK"
-      ? quantity(body.quantity, "quantity", 1)
-      : -quantity(body.quantity, "quantity", 1));
-  }
-  return { type, afterQuantity, note: movementNote(body.note) };
-}
-
 export function createApp(prisma) {
   const app = express();
   app.disable("x-powered-by");
@@ -230,7 +92,13 @@ export function createApp(prisma) {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)
       throw badRequest("limit은 1~100 사이 정수여야 합니다.");
     const cursor = decodeHistoryCursor(req.query.cursor);
-    const history = await prisma.$transaction((tx) => historyPage(tx, cursor, limit), {
+    const filter = {};
+    for (const key of ["itemId", "orderId"]) {
+      if (req.query[key] === undefined) continue;
+      if (typeof req.query[key] !== "string" || !req.query[key]) throw badRequest(`올바른 ${key}를 입력해 주세요.`);
+      filter[key] = req.query[key];
+    }
+    const history = await prisma.$transaction((tx) => historyPage(tx, cursor, limit, filter), {
       isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
     });
     res.json({ data: history });
@@ -245,54 +113,22 @@ export function createApp(prisma) {
     res.json({ data: (await itemResponses(prisma, [item]))[0] });
   });
   router.post("/items", async (req, res) => {
-    const data = itemInput(req.body);
-    const item = await prisma.$transaction(async (tx) => {
-      const created = await tx.item.create({ data: { ...data, stock: 0 } });
-      await tx.activityEvent.create({ data: { text: `${created.name} · 품목 등록` } });
-      if (!data.stock) return created;
-      return (await recordStockChange(tx, created, {
-        type: "ADJUSTMENT", afterQuantity: data.stock, note: "초기 재고",
-      })).item;
-    });
+    const item = await createItem(prisma, req.body);
     res.status(201).json({ data: (await itemResponses(prisma, [item]))[0] });
   });
   router.patch("/items/:id", async (req, res) => {
-    const item = await prisma.$transaction(async (tx) => {
-      const previous = await activeItemForUpdate(tx, req.params.id);
-      const data = itemInput(req.body, previous);
-      const { stock, ...fields } = data;
-      let updated = Object.keys(fields).length
-        ? await tx.item.update({ where: { id: previous.id }, data: fields })
-        : previous;
-      if (itemFields.some((key) => key !== "stock" && data[key] !== undefined && data[key] !== previous[key]))
-        await tx.activityEvent.create({ data: { text: `${updated.name} · 품목 수정` } });
-      if (stock !== undefined && stock !== previous.stock)
-        updated = (await recordStockChange(tx, updated, {
-          type: "ADJUSTMENT", afterQuantity: stock, note: "품목 수정",
-        })).item;
-      return updated;
-    });
+    const item = await updateItem(prisma, req.params.id, req.body);
     res.json({ data: (await itemResponses(prisma, [item]))[0] });
   });
   router.patch("/items/:id/stock", async (req, res) => {
     if (!req.body || !("stock" in req.body) || Object.keys(req.body).some((key) => !["stock", "type", "note"].includes(key)))
       throw badRequest("stock 값을 입력해 주세요.");
-    const stock = quantity(req.body.stock, "stock");
-    const type = movementType(req.body.type ?? "ADJUSTMENT");
-    const note = movementNote(req.body.note);
-    const item = await prisma.$transaction(async (tx) => {
-      const previous = await activeItemForUpdate(tx, req.params.id);
-      return (await recordStockChange(tx, previous, {
-        type, afterQuantity: stock, note,
-      }, true)).item;
-    });
+    const item = await updateStock(prisma, req.params.id, quantity(req.body.stock, "stock"),
+      movementType(req.body.type ?? "ADJUSTMENT"), movementNote(req.body.note));
     res.json({ data: (await itemResponses(prisma, [item]))[0] });
   });
   router.post("/items/:id/movements", async (req, res) => {
-    const movement = await prisma.$transaction(async (tx) => {
-      const item = await activeItemForUpdate(tx, req.params.id);
-      return (await recordStockChange(tx, item, movementInput(req.body, item.stock))).movement;
-    });
+    const movement = await createMovement(prisma, req.params.id, req.body);
     res.status(201).json({ data: movement });
   });
   router.get("/items/:id/movements", async (req, res) => {
@@ -315,12 +151,7 @@ export function createApp(prisma) {
     res.json({ data: movements });
   });
   router.delete("/items/:id", async (req, res) => {
-    await prisma.$transaction(async (tx) => {
-      const item = await activeItemForUpdate(tx, req.params.id);
-      await tx.queueEntry.deleteMany({ where: { itemId: item.id } });
-      await tx.item.update({ where: { id: item.id }, data: { deletedAt: new Date() } });
-      await tx.activityEvent.create({ data: { text: `${item.name} · 품목 삭제` } });
-    });
+    await deleteItem(prisma, req.params.id);
     res.json({ data: { id: req.params.id } });
   });
   router.get("/queue", async (_req, res) => {
@@ -353,19 +184,7 @@ export function createApp(prisma) {
     res.json({ data: { id: req.params.id } });
   });
   router.post("/orders", async (_req, res) => {
-    const order = await prisma.$transaction(async (tx) => {
-      const queue = await tx.queueEntry.findMany({ include: { item: true }, orderBy: { createdAt: "asc" } });
-      if (!queue.length) throw badRequest("발주 목록이 비어 있습니다.");
-      const lines = queue.map((entry, position) => ({
-        itemId: entry.itemId, position, name: entry.item.name, unit: entry.item.unit,
-        orderedQuantity: entry.quantity,
-      }));
-      const created = await tx.order.create({ data: { lines: { create: lines } }, include: orderInclude });
-      await tx.activityEvent.create({ data: { text: `발주 생성 · ${lines.map((line) => `${line.name} ${line.orderedQuantity}개`).join(", ")}` } });
-      await tx.queueEntry.deleteMany({});
-      return created;
-    });
-    res.status(201).json({ data: orderResponse(order) });
+    res.status(201).json({ data: orderResponse(await createOrder(prisma)) });
   });
   router.get("/orders", async (_req, res) => {
     const orders = await prisma.order.findMany({ orderBy: { createdAt: "desc" }, take: 50, include: orderInclude });
@@ -377,67 +196,11 @@ export function createApp(prisma) {
     res.json({ data: orderResponse(order) });
   });
   router.post("/orders/:id/receive", async (req, res) => {
-    const body = req.body;
-    if (body && (typeof body !== "object" || Array.isArray(body) || Object.keys(body).some((key) => key !== "lines")))
-      throw badRequest("입고 요청에는 lines만 입력해 주세요.");
-    const requested = body?.lines;
-    if (requested !== undefined && (!Array.isArray(requested) || !requested.length || requested.some((line) =>
-      !line || typeof line !== "object" || Array.isArray(line) ||
-      Object.keys(line).some((key) => !["itemId", "quantity"].includes(key)) ||
-      typeof line.itemId !== "string" || !line.itemId)))
-      throw badRequest("입고 품목과 수량을 입력해 주세요.");
-    if (requested) {
-      const ids = requested.map((line) => line.itemId);
-      if (new Set(ids).size !== ids.length) throw badRequest("입고 품목이 중복되었습니다.");
-      requested.forEach((line) => quantity(line.quantity, "입고 수량", 1));
-    }
-    const received = await prisma.$transaction(async (tx) => {
-      const order = await orderForUpdate(tx, req.params.id);
-      if (!["ORDERED", "PARTIALLY_RECEIVED"].includes(order.status)) throw conflict("이미 입고가 완료된 발주입니다.");
-      if (!order.lines.length) throw conflict("입고할 품목이 없습니다.");
-      const receipt = requested ?? order.lines.filter((line) => line.receivedQuantity < line.orderedQuantity)
-        .map((line) => ({ itemId: line.itemId, quantity: line.orderedQuantity - line.receivedQuantity }));
-      if (!receipt.length) throw conflict("입고할 잔여 수량이 없습니다.");
-      for (const entry of receipt) {
-        const line = order.lines.find((candidate) => candidate.itemId === entry.itemId);
-        if (!line) throw badRequest("발주에 없는 품목입니다.");
-        if (entry.quantity > line.orderedQuantity - line.receivedQuantity) throw conflict("입고 수량이 잔여 발주 수량을 초과합니다.");
-      }
-      for (const entry of [...receipt].sort((a, b) => a.itemId.localeCompare(b.itemId))) {
-        const item = await activeItemForUpdate(tx, entry.itemId).catch((error) => {
-          if (error.status === 404) throw conflict("삭제된 품목이 있어 입고할 수 없습니다.");
-          throw error;
-        });
-        await recordStockChange(tx, item, {
-          type: "RESTOCK", afterQuantity: item.stock + entry.quantity, note: `발주 ${order.id} 입고`, orderId: order.id,
-        });
-        await tx.orderLine.update({ where: { orderId_itemId: { orderId: order.id, itemId: entry.itemId } },
-          data: { receivedQuantity: { increment: entry.quantity } } });
-      }
-      const fullyReceived = order.lines.every((line) => line.receivedQuantity +
-        (receipt.find((entry) => entry.itemId === line.itemId)?.quantity ?? 0) === line.orderedQuantity);
-      const updated = await tx.order.update({
-        where: { id: order.id },
-        data: { status: fullyReceived ? "RECEIVED" : "PARTIALLY_RECEIVED", ...(fullyReceived ? { receivedAt: new Date() } : {}) },
-        include: orderInclude,
-      });
-      await tx.activityEvent.create({ data: { text: `발주 ${fullyReceived ? "입고 완료" : "부분 입고"} · ${receipt.map((entry) => `${order.lines.find((line) => line.itemId === entry.itemId).name} ${entry.quantity}개`).join(", ")}` } });
-      return updated;
-    });
-    res.json({ data: orderResponse(received) });
+    res.json({ data: orderResponse(await receiveOrder(prisma, req.params.id, req.body)) });
   });
   router.post("/orders/:id/complete", async (req, res) => {
     if (req.body && Object.keys(req.body).length) throw badRequest("완료 요청에는 본문을 입력하지 마세요.");
-    const completed = await prisma.$transaction(async (tx) => {
-      const order = await orderForUpdate(tx, req.params.id);
-      if (order.status !== "RECEIVED") throw conflict("입고된 발주만 완료할 수 있습니다.");
-      const updated = await tx.order.update({
-        where: { id: order.id }, data: { status: "COMPLETED", completedAt: new Date() }, include: orderInclude,
-      });
-      await tx.activityEvent.create({ data: { text: `발주 완료 · ${order.id}` } });
-      return updated;
-    });
-    res.json({ data: orderResponse(completed) });
+    res.json({ data: orderResponse(await completeOrder(prisma, req.params.id)) });
   });
   app.use("/api", router);
   // The same resource paths are available directly for non-browser API clients.

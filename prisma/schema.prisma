@@ -13,6 +13,7 @@ model Item {
   category     String          @db.VarChar(30)
   unit         String          @db.VarChar(20)
   stock        Int
+  openingStock Int             @default(0)
   minimum      Int
   target       Int
   leadTimeDays Int             @default(2)
@@ -22,6 +23,7 @@ model Item {
   queue        QueueEntry?
   movements    StockMovement[]
   orderLines   OrderLine[]
+  activities   ActivityEvent[]
 }
 
 enum StockMovementType {
@@ -58,9 +60,28 @@ model QueueEntry {
 }
 
 model ActivityEvent {
-  id   String   @id @default(uuid())
-  date DateTime @default(now())
-  text String   @db.Text
+  id      String            @id @default(uuid())
+  date    DateTime          @default(now())
+  text    String            @db.Text
+  type    ActivityEventType @default(LEGACY)
+  itemId  String?
+  orderId String?
+  item    Item?             @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  order   Order?            @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  @@index([itemId, date])
+  @@index([orderId, date])
+}
+
+enum ActivityEventType {
+  LEGACY
+  ITEM_CREATED
+  ITEM_UPDATED
+  ITEM_DELETED
+  ORDER_CREATED
+  ORDER_PARTIALLY_RECEIVED
+  ORDER_RECEIVED
+  ORDER_COMPLETED
 }
 
 enum OrderStatus {
@@ -78,6 +99,7 @@ model Order {
   completedAt DateTime?
   lines       OrderLine[]
   movements   StockMovement[]
+  activities  ActivityEvent[]
 
   @@index([status, createdAt])
 }

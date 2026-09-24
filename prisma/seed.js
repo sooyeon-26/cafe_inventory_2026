@@ -7,7 +7,7 @@ try {
   for (const item of seedItems) {
     await prisma.item.upsert({
       where: { id: item.id },
-      create: item,
+      create: { ...item, openingStock: item.stock },
       update: {},
     });
   }

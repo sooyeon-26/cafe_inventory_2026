@@ -217,7 +217,7 @@ export function History({ history, onClose, hasMore = false, loadingMore = false
               <span
                 className={`history-dot ${event.kind === "movement"
                   ? event.type === "RESTOCK" ? "blue" : event.type === "WASTE" ? "red" : ""
-                  : event.text.startsWith("발주") ? "blue" : ""}`}
+                  : event.type?.startsWith("ORDER_") || (event.type === "LEGACY" && event.text.startsWith("발주")) ? "blue" : ""}`}
               />
               <div>
                 <time>

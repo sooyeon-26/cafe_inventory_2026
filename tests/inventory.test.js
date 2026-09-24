@@ -6,7 +6,11 @@ import {
   calculateAverageDailyUsage,
   calculateDaysUntilStockout,
   calculateRecommendation,
+  recommendationsForItems,
+  usageWindow,
 } from "../server/reorder.js";
+import { auditStockLedger } from "../server/stock-audit.js";
+import { showcaseUsageEvents } from "../prisma/showcase-seed.js";
 
 test("seven-day usage and stockout estimate include days without usage", () => {
   assert.equal(calculateAverageDailyUsage(14), 2);
@@ -49,4 +53,43 @@ test("search and server-provided status filters compose with seeded items", () =
   assert.ok(
     filterItems(items, "음료", "all").every((item) => item.category === "음료"),
   );
+});
+
+test("fixed 7-day window includes its boundary, empty days and midnight without future usage", async () => {
+  const asOf = new Date("2026-03-08T00:00:00.000Z");
+  const window = usageWindow(asOf);
+  assert.equal(window.gte.toISOString(), "2026-03-01T00:00:00.000Z");
+  assert.equal(window.lte.toISOString(), asOf.toISOString());
+  const movements = [
+    { date: new Date("2026-02-28T23:59:59.999Z"), change: -100 },
+    { date: window.gte, change: -6 },
+    { date: new Date("2026-03-07T23:59:59.999Z"), change: -8 },
+    { date: new Date("2026-03-08T00:00:00.001Z"), change: -100 },
+  ];
+  const db = { stockMovement: { groupBy: async ({ where }) => [{ itemId: "fixture",
+    _sum: { quantityChange: movements.filter(({ date }) => date >= where.createdAt.gte && date <= where.createdAt.lte)
+      .reduce((sum, movement) => sum + movement.change, 0) } }] } };
+  const result = await recommendationsForItems(db, [{ id: "fixture", stock: 6, minimum: 2, target: 10, leadTimeDays: 2 }], asOf);
+  assert.equal(result.get("fixture").averageDailyUsage, 2);
+  assert.equal(result.get("fixture").estimatedDaysUntilStockout, 3);
+});
+
+test("stock audit detects both a broken movement chain and mismatched current balance", () => {
+  const item = { id: "sample", openingStock: 10, stock: 8, movements: [
+    { id: "use", beforeQuantity: 10, quantityChange: -2, afterQuantity: 8 },
+  ] };
+  assert.deepEqual(auditStockLedger([item]), []);
+  assert.deepEqual(auditStockLedger([{ ...item, stock: 9 }]).map((issue) => issue.reason), ["stock_balance"]);
+  assert.deepEqual(auditStockLedger([{ ...item, movements: [{ ...item.movements[0], beforeQuantity: 9 }] }])
+    .map((issue) => issue.reason), ["movement_chain"]);
+});
+
+test("showcase usage can be replayed at a fixed time with the same stock trail", () => {
+  const item = { id: "fixture", name: "Fixture", stock: 5 };
+  const events = showcaseUsageEvents(item, 2, new Date("2026-04-01T12:00:00Z"));
+  assert.equal(events.length, 7);
+  assert.equal(events[0].beforeQuantity, 19);
+  assert.equal(events.at(-1).afterQuantity, 5);
+  assert.equal(events.reduce((total, event) => total + event.quantityChange, 0), -14);
+  assert.ok(events.every((event) => event.createdAt < new Date("2026-04-01T12:00:00Z")));
 });

@@ -4,6 +4,8 @@ import assert from "node:assert/strict";
 import { PrismaClient } from "@prisma/client";
 import { createApp } from "../server/app.js";
 import { seedItems } from "../src/data.js";
+import { auditStockLedger } from "../server/stock-audit.js";
+import { ensureShowcase } from "../prisma/showcase-seed.js";
 
 const testUrl = process.env.TEST_DATABASE_URL;
 if (!testUrl || !new URL(testUrl).pathname.endsWith("_test"))
@@ -19,7 +21,7 @@ test("item API persists CRUD, stock, queue and order changes in PostgreSQL", asy
     prisma.order.deleteMany(),
     prisma.item.deleteMany(),
   ]);
-  for (const item of seedItems) await prisma.item.create({ data: item });
+  for (const item of seedItems) await prisma.item.create({ data: { ...item, openingStock: item.stock } });
   const server = createApp(prisma).listen(0, "127.0.0.1");
   await new Promise((resolve) => server.once("listening", resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -55,6 +57,8 @@ test("item API persists CRUD, stock, queue and order changes in PostgreSQL", asy
     assert.ok(id);
     assert.ok(created.payload.data.createdAt);
     assert.equal(created.payload.data.leadTimeDays, 2);
+    assert.ok((await call(`/history?itemId=${id}`)).payload.data.entries.some((event) =>
+      event.kind === "activity" && event.type === "ITEM_CREATED" && event.itemId === id));
     const opening = (await call(`/items/${id}/movements`)).payload.data;
     assert.equal(opening.length, 1);
     assert.deepEqual(
@@ -154,6 +158,8 @@ test("item API persists CRUD, stock, queue and order changes in PostgreSQL", asy
     assert.equal(order.payload.data.lines[0].quantity, 7);
     assert.equal((await call("/orders")).payload.data[0].id, order.payload.data.id);
     assert.equal((await call(`/orders/${order.payload.data.id}`)).payload.data.status, "ORDERED");
+    assert.ok((await call(`/history?orderId=${order.payload.data.id}`)).payload.data.entries.some((event) =>
+      event.type === "ORDER_CREATED" && event.orderId === order.payload.data.id));
     assert.equal((await call(`/orders/${order.payload.data.id}/complete`, "POST")).status, 409);
     assert.equal((await call("/state")).payload.data.queue.length, 0);
     assert.equal((await call(`/items/${id}`)).payload.data.stock, 3);
@@ -188,6 +194,10 @@ test("item API persists CRUD, stock, queue and order changes in PostgreSQL", asy
     await prisma.stockMovement.update({
       where: { id: consumed.payload.data.id },
       data: { createdAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000) },
+    });
+    await prisma.stockMovement.updateMany({
+      where: { itemId: fastId, type: "ADJUSTMENT" },
+      data: { createdAt: new Date(Date.now() - 9 * 24 * 60 * 60 * 1000) },
     });
     const expired = (await call(`/items/${fastId}`)).payload.data;
     assert.equal(expired.averageDailyUsage, 0);
@@ -230,6 +240,8 @@ test("item API persists CRUD, stock, queue and order changes in PostgreSQL", asy
     const receipts = await prisma.stockMovement.findMany({ where: { orderId: receivingId, itemId: receiveId }, orderBy: { createdAt: "asc" } });
     assert.deepEqual(receipts.map((movement) => movement.quantityChange), [6, 2]);
     assert.deepEqual(receipts.map((movement) => [movement.beforeQuantity, movement.afterQuantity]), [[2, 8], [8, 10]]);
+    assert.equal((await call(`/history?orderId=${receivingId}`)).payload.data.entries.filter((event) =>
+      event.kind === "movement" && event.type === "RESTOCK").length, 3);
     assert.equal((await call(`/orders/${receivingId}/receive`, "POST")).status, 409);
     const completed = await call(`/orders/${receivingId}/complete`, "POST");
     assert.equal(completed.payload.data.status, "COMPLETED");
@@ -255,6 +267,12 @@ test("item API persists CRUD, stock, queue and order changes in PostgreSQL", asy
     assert.equal((await call(`/items/${first.payload.data.id}`)).payload.data.stock, 2);
     assert.equal(await prisma.stockMovement.count({ where: { itemId: first.payload.data.id } }), firstMovementCount);
 
+    await assert.rejects(prisma.item.update({ where: { id: first.payload.data.id }, data: { stock: -1 } }));
+    const ledgerItems = await prisma.item.findMany({ include: {
+      movements: { orderBy: [{ createdAt: "asc" }, { id: "asc" }] },
+    } });
+    assert.deepEqual(auditStockLedger(ledgerItems), []);
+
     await prisma.activityEvent.createMany({ data: Array.from({ length: 25 }, (_, index) => ({
       text: `페이지 테스트 ${index}`,
     })) });
@@ -278,6 +296,22 @@ test("item API persists CRUD, stock, queue and order changes in PostgreSQL", asy
     assert.ok((await call("/state")).payload.data.history.length <= 20);
     assert.equal((await call("/history?limit=0")).status, 400);
     assert.equal((await call("/history?cursor=bad")).status, 400);
+
+    await ensureShowcase(prisma, { asOf: new Date("2026-09-20T12:00:00Z") });
+    assert.equal(await prisma.stockMovement.count({ where: { itemId: "demo-decaf-beans" } }), 7);
+    await ensureShowcase(prisma, { refresh: true, asOf: new Date("2026-09-24T12:00:00Z") });
+    const replayedAt = (await prisma.stockMovement.findFirst({
+      where: { itemId: "demo-decaf-beans" }, orderBy: { createdAt: "asc" },
+    })).createdAt;
+    assert.equal(replayedAt.toISOString(), "2026-09-18T00:00:00.000Z");
+    assert.equal((await call("/items/demo-almond-milk/movements", "POST", {
+      type: "ADJUSTMENT", quantityChange: 1,
+    })).status, 201);
+    await assert.rejects(ensureShowcase(prisma, { refresh: true, asOf: new Date("2026-09-25T12:00:00Z") }),
+      /시연 외 변경 이력/);
+    assert.equal((await prisma.stockMovement.findFirst({
+      where: { itemId: "demo-decaf-beans" }, orderBy: { createdAt: "asc" },
+    })).createdAt.toISOString(), replayedAt.toISOString());
   } finally {
     server.close();
     await prisma.$disconnect();

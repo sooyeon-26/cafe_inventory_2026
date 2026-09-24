@@ -17,7 +17,7 @@ test.beforeEach(async () => {
       prisma.order.deleteMany(),
       prisma.item.deleteMany(),
     ]);
-    for (const item of seedItems) await prisma.item.create({ data: item });
+    for (const item of seedItems) await prisma.item.create({ data: { ...item, openingStock: item.stock } });
   } finally {
     await prisma.$disconnect();
   }
