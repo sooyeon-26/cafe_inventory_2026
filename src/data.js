@@ -90,9 +90,3 @@ export const seedItems = [
     target: 5,
   },
 ];
-
-export const initialState = () => ({
-  items: seedItems.map((item) => ({ ...item })),
-  queue: [],
-  history: [],
-});

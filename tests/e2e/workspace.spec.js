@@ -1,4 +1,26 @@
+import "dotenv/config";
 import { test, expect } from "@playwright/test";
+import { PrismaClient } from "@prisma/client";
+import { seedItems } from "../../src/data.js";
+
+const testUrl = process.env.TEST_DATABASE_URL;
+if (!testUrl || !new URL(testUrl).pathname.endsWith("_test"))
+  throw new Error("TEST_DATABASE_URL은 이름이 _test로 끝나는 별도 PostgreSQL DB를 가리켜야 합니다.");
+
+test.beforeEach(async () => {
+  const prisma = new PrismaClient({ datasources: { db: { url: testUrl } } });
+  try {
+    await prisma.$transaction([
+      prisma.queueEntry.deleteMany(),
+      prisma.activityEvent.deleteMany(),
+      prisma.order.deleteMany(),
+      prisma.item.deleteMany(),
+    ]);
+    for (const item of seedItems) await prisma.item.create({ data: item });
+  } finally {
+    await prisma.$disconnect();
+  }
+});
 
 test("complete stock and ordering flow persists on refresh without console errors", async ({
   page,
@@ -153,18 +175,33 @@ for (const width of [1600, 1440, 1280, 1024]) {
     });
   });
 }
-test("corrupt saved data is preserved with an explicit warning", async ({
+test("legacy browser data does not override PostgreSQL items", async ({
   page,
 }) => {
   await page.addInitScript(() =>
     localStorage.setItem("cafe-inventory:v1", "{broken"),
   );
   await page.goto("/");
-  await expect(page.getByRole("alert")).toContainText("원본 보호");
+  await expect(page.getByRole("heading", { name: "오트밀크", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "오트밀크 현재 재고 증가" }).click();
   expect(
     await page.evaluate(() => localStorage.getItem("cafe-inventory:v1")),
   ).toBe("{broken");
+});
+
+test("load failure shows a retry without replacing the workspace", async ({ page }) => {
+  await page.route("**/api/state", (route) => route.fulfill({
+    status: 503,
+    contentType: "application/json",
+    body: JSON.stringify({ error: { code: "UNAVAILABLE", message: "일시적으로 연결할 수 없습니다." } }),
+  }));
+  await page.goto("/");
+  await expect(page.getByRole("alert")).toContainText("재고 정보를 불러오지 못했습니다.");
+  await expect(page.locator(".workspace")).toBeVisible();
+  await page.unroute("**/api/state");
+  await page.getByRole("button", { name: "다시 시도" }).click();
+  await expect(page.getByRole("heading", { name: "오트밀크", exact: true })).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
 });
 
 test("filter counts follow live stock while search retains inventory totals", async ({

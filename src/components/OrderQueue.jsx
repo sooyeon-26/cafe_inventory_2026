@@ -12,6 +12,7 @@ export default function OrderQueue({
   open,
   onClose,
   pulse,
+  disabled = false,
 }) {
   const panel = useRef(null);
   useEffect(() => {
@@ -114,6 +115,7 @@ export default function OrderQueue({
                     className="remove-item"
                     aria-label={`${item.name} 발주 목록에서 삭제`}
                     onClick={() => onRemove(item.id)}
+                    disabled={disabled}
                   >
                     ×
                   </button>
@@ -129,6 +131,7 @@ export default function OrderQueue({
                     value={entry.quantity}
                     onChange={(value) => onQuantity(item.id, value)}
                     label={`${item.name} 발주 수량`}
+                    disabled={disabled}
                   />
                   <span>개</span>
                 </div>
@@ -159,7 +162,7 @@ export default function OrderQueue({
           </div>
           <button
             className="primary create-order"
-            disabled={!queue.length}
+            disabled={disabled || !queue.length}
             onClick={onOrder}
           >
             발주하기

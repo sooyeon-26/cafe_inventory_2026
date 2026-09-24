@@ -16,6 +16,7 @@ export default function ItemBrowser({
   filter,
   setFilter,
   onNew,
+  disabled = false,
 }) {
   const visible = filterItems(items, query, filter);
   return (
@@ -31,6 +32,7 @@ export default function ItemBrowser({
           className="new-item circle"
           onClick={onNew}
           aria-label="품목 등록"
+          disabled={disabled}
         >
           +
         </button>

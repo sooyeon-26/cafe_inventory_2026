@@ -1,42 +1,56 @@
-import { useEffect, useReducer, useState } from "react";
-import { initialState } from "./data.js";
-import { inventoryReducer, isValidState, STORAGE_KEY } from "./inventory.js";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { inventoryApi } from "./api.js";
 
-function load() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { data: initialState(), error: "" };
-    const data = JSON.parse(raw);
-    if (!isValidState(data)) throw new Error("invalid");
-    return { data, error: "" };
-  } catch {
-    return {
-      data: initialState(),
-      error:
-        "저장 데이터를 읽을 수 없습니다. 원본 보호를 위해 저장을 중단했습니다. 현재 변경은 이 화면에서만 유지됩니다.",
-    };
-  }
-}
+const emptyState = { items: [], queue: [], history: [] };
+
 export function useInventory() {
-  const [loaded] = useState(load);
-  const [state, dispatch] = useReducer(inventoryReducer, loaded.data);
-  const [storageError, setStorageError] = useState(loaded.error);
-  useEffect(() => {
-    if (loaded.error) return;
+  const [state, setState] = useState(emptyState);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const busyRef = useRef(false);
+
+  const retry = useCallback(async () => {
+    setLoading(true);
+    setError("");
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-      setStorageError("");
-    } catch {
-      setStorageError(
-        "브라우저 저장 공간에 접근할 수 없습니다. 새로고침하면 변경 내용이 사라질 수 있습니다.",
-      );
+      setState(await inventoryApi.state());
+    } catch (cause) {
+      setError(`재고 정보를 불러오지 못했습니다. ${cause.message}`);
+    } finally {
+      setLoading(false);
     }
-  }, [state, loaded.error]);
-  const act = (action) =>
-    dispatch({
-      ...action,
-      eventId: crypto.randomUUID(),
-      date: new Date().toISOString(),
-    });
-  return { state, act, storageError };
+  }, []);
+
+  useEffect(() => { retry(); }, [retry]);
+
+  const act = useCallback(async (action) => {
+    if (busyRef.current) return null;
+    busyRef.current = true;
+    setBusy(true);
+    setError("");
+    try {
+      let result;
+      switch (action.type) {
+        case "stock": result = await inventoryApi.stock(action.id, action.value); break;
+        case "save": result = await inventoryApi.save(action.item); break;
+        case "delete": result = await inventoryApi.delete(action.id); break;
+        case "queue-add": result = await inventoryApi.queueAdd(action.id); break;
+        case "queue-quantity": result = await inventoryApi.queueQuantity(action.id, action.value); break;
+        case "queue-remove": result = await inventoryApi.queueRemove(action.id); break;
+        case "order": result = await inventoryApi.order(); break;
+        default: throw new Error("지원하지 않는 작업입니다.");
+      }
+      setState(await inventoryApi.state());
+      return result;
+    } catch (cause) {
+      setError(`변경사항을 저장하지 못했습니다. ${cause.message}`);
+      return null;
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
+  }, []);
+
+  return { state, act, loading, busy, error, retry };
 }

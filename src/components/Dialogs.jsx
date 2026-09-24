@@ -41,16 +41,16 @@ export function Modal({ title, onClose, children, className = "" }) {
     </dialog>
   );
 }
-export function ItemForm({ item, onSave, onClose }) {
+export function ItemForm({ item, onSave, onClose, disabled = false }) {
   const [error, setError] = useState("");
   return (
     <Modal title={item ? "품목 수정" : "새 품목 등록"} onClose={onClose}>
       <form
-        onSubmit={(event) => {
+        onSubmit={async (event) => {
           event.preventDefault();
           const form = new FormData(event.currentTarget);
           const next = {
-            id: item?.id ?? crypto.randomUUID(),
+            ...(item?.id ? { id: item.id } : {}),
             name: form.get("name").trim(),
             category: form.get("category").trim(),
             unit: form.get("unit").trim(),
@@ -62,7 +62,7 @@ export function ItemForm({ item, onSave, onClose }) {
             return setError("품목명, 카테고리, 단위를 입력해 주세요.");
           if (next.target < next.minimum)
             return setError("적정 재고는 최소 재고 이상이어야 합니다.");
-          onSave(next);
+          if (!await onSave(next)) setError("저장하지 못했습니다. 잠시 후 다시 시도해 주세요.");
         }}
       >
         <p className="modal-description">
@@ -130,7 +130,7 @@ export function ItemForm({ item, onSave, onClose }) {
           <button type="button" className="secondary" onClick={onClose}>
             취소
           </button>
-          <button className="primary" type="submit">
+          <button className="primary" type="submit" disabled={disabled}>
             {item ? "변경 저장" : "품목 등록"}
           </button>
         </div>

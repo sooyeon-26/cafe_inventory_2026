@@ -81,6 +81,7 @@ export default function ItemWorkspace({
   queued,
   onEdit,
   onDelete,
+  disabled = false,
 }) {
   if (!item)
     return (
@@ -96,9 +97,9 @@ export default function ItemWorkspace({
       <div className="detail-topline">
         <span className="eyebrow">ITEM WORKSPACE</span>
         <div className="item-actions">
-          <button onClick={onEdit}>품목 수정</button>
+          <button onClick={onEdit} disabled={disabled}>품목 수정</button>
           <span>/</span>
-          <button onClick={onDelete}>삭제</button>
+          <button onClick={onDelete} disabled={disabled}>삭제</button>
         </div>
       </div>
       <div className="item-title" key={item.id}>
@@ -121,6 +122,7 @@ export default function ItemWorkspace({
               value={item.stock}
               onChange={onStock}
               label={`${item.name} 현재 재고`}
+              disabled={disabled}
             />
             <span className="stock-unit">
               보유 수량 <span>·</span> {item.unit} 기준
@@ -173,7 +175,7 @@ export default function ItemWorkspace({
         </div>
         <button
           className={`add-order ${queued ? "queued" : ""}`}
-          disabled={!suggested && !queued}
+          disabled={disabled || (!suggested && !queued)}
           onClick={onAdd}
         >
           {queued ? "발주 목록에서 확인" : "발주 목록에 추가"}

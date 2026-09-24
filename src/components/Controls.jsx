@@ -16,6 +16,7 @@ export function QuantityControl({
   label,
   large = false,
   min = 0,
+  disabled = false,
 }) {
   const inputRef = useRef(null);
   const previous = useRef(value);
@@ -36,7 +37,7 @@ export function QuantityControl({
       <button
         className="circle"
         aria-label={`${label} 감소`}
-        disabled={value <= min}
+        disabled={disabled || value <= min}
         onClick={() => onChange(value - 1)}
       >
         −
@@ -54,6 +55,7 @@ export function QuantityControl({
         max={MAX_QUANTITY}
         step="1"
         value={value}
+        disabled={disabled}
         onChange={(event) => {
           if (event.target.value === "") return;
           const next = Number(event.target.value);
@@ -64,7 +66,7 @@ export function QuantityControl({
       <button
         className="circle"
         aria-label={`${label} 증가`}
-        disabled={value >= MAX_QUANTITY}
+        disabled={disabled || value >= MAX_QUANTITY}
         onClick={() => onChange(value + 1)}
       >
         +

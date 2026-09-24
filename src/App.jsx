@@ -8,7 +8,7 @@ import { suggestedOrder } from "./inventory.js";
 import { History, ItemForm, Modal } from "./components/Dialogs.jsx";
 
 export default function App() {
-  const { state, act, storageError } = useInventory();
+  const { state, act, loading, busy, error, retry } = useInventory();
   const [selectedId, setSelectedId] = useState(state.items[0]?.id);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
@@ -38,14 +38,14 @@ export default function App() {
     return () => window.removeEventListener("keydown", close);
   }, []);
   const notify = (text) => setToast({ text, id: crypto.randomUUID() });
-  const addOrder = () => {
-    act({ type: "queue-add", id: selected.id });
+  const addOrder = async () => {
+    const result = await act({ type: "queue-add", id: selected.id });
+    if (!result) return;
     setPulse({
       id: selected.id,
       key: crypto.randomUUID(),
       quantity:
-        state.queue.find((entry) => entry.id === selected.id)?.quantity ??
-        suggestedOrder(selected),
+        result.quantity ?? suggestedOrder(selected),
     });
     if (window.innerWidth <= 1100) setQueueOpen(true);
     notify(
@@ -103,15 +103,16 @@ export default function App() {
             </span>
             <span>
               <i className="live-dot" />
-              {storageError ? "저장 상태 확인 필요" : "이 브라우저에 자동 저장"}
+              {error ? "저장 상태 확인 필요" : busy ? "저장 중..." : "변경사항이 자동으로 저장됩니다"}
             </span>
           </div>
         </div>
-        {storageError && (
+        {error && (
           <div className="storage-error" role="alert">
-            {storageError}
+            {error} <button type="button" onClick={retry}>다시 시도</button>
           </div>
         )}
+        {loading && <p className="loading-state" role="status">재고 정보를 불러오는 중...</p>}
         <div className="workspace" ref={workspaceRef}>
           <ItemBrowser
             items={state.items}
@@ -122,12 +123,14 @@ export default function App() {
             filter={filter}
             setFilter={setFilter}
             onNew={() => setDialog("new")}
+            disabled={busy || loading}
           />
           <ItemWorkspace
             item={selected}
             onStock={(value) => act({ type: "stock", id: selected.id, value })}
             onAdd={addOrder}
             queued={queued}
+            disabled={busy || loading}
             onEdit={() => setDialog("edit")}
             onDelete={() => setDialog("delete")}
           />
@@ -143,10 +146,11 @@ export default function App() {
               act({ type: "queue-quantity", id, value })
             }
             onRemove={(id) => act({ type: "queue-remove", id })}
-            onOrder={() => {
-              act({ type: "order" });
-              notify("데모 발주를 생성했어요. History에서 확인할 수 있습니다.");
+            onOrder={async () => {
+              if (await act({ type: "order" }))
+                notify("데모 발주를 생성했어요. History에서 확인할 수 있습니다.");
             }}
+            disabled={busy || loading}
             open={queueOpen}
             onClose={() => setQueueOpen(false)}
             pulse={pulse}
@@ -181,12 +185,15 @@ export default function App() {
         <ItemForm
           item={dialog === "edit" ? selected : null}
           onClose={() => setDialog(null)}
-          onSave={(item) => {
-            act({ type: "save", item });
-            setSelectedId(item.id);
+          onSave={async (item) => {
+            const saved = await act({ type: "save", item });
+            if (!saved) return false;
+            setSelectedId(saved.id);
             setDialog(null);
             notify("품목을 저장했어요.");
+            return true;
           }}
+          disabled={busy}
         />
       )}
       {dialog === "history" && (
@@ -204,8 +211,9 @@ export default function App() {
             </button>
             <button
               className="danger"
-              onClick={() => {
-                act({ type: "delete", id: selected.id });
+              disabled={busy}
+              onClick={async () => {
+                if (!await act({ type: "delete", id: selected.id })) return;
                 setDialog(null);
                 notify("품목을 삭제했어요.");
               }}
