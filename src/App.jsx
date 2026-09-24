@@ -236,8 +236,8 @@ export default function App() {
       )}
       {dialog === "orders" && (
         <Orders orders={orders} loading={ordersLoading} error={ordersError} onRetry={retryOrders}
-          actionError={actionError} pending={pendingOrderAction} onReceive={async (id) => {
-            if (await act({ type: "receive", id })) notify("입고를 기록하고 재고를 반영했어요.");
+          actionError={actionError} pending={pendingOrderAction} onReceive={async (id, lines) => {
+            if (await act({ type: "receive", id, lines })) notify("입고를 기록하고 재고를 반영했어요.");
           }} onComplete={async (id) => {
             if (await act({ type: "complete", id })) notify("발주를 완료했어요.");
           }} onClose={() => setDialog(null)} />

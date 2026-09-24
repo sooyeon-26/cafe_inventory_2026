@@ -1305,6 +1305,34 @@ svg {
   border-radius: 8px;
   font-size: 11px;
 }
+.order-receipt-form {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0;
+}
+.order-receipt-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #3d4d37;
+  font-size: 12px;
+}
+.order-receipt-line span {
+  display: grid;
+  gap: 3px;
+}
+.order-receipt-line small {
+  color: #7e8b77;
+}
+.order-receipt-line input {
+  width: 72px;
+  padding: 7px;
+  border: 1px solid #dce3d7;
+  border-radius: 8px;
+  color: #3d4d37;
+  background: #fff;
+}
 @keyframes reveal {
   from {
     opacity: 0;

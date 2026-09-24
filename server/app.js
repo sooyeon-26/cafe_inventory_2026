@@ -111,6 +111,14 @@ async function historyPage(db, cursor, limit) {
 }
 
 const queueResponse = (queue) => queue.map((entry) => ({ id: entry.itemId, quantity: entry.quantity }));
+const orderInclude = { lines: { orderBy: { position: "asc" } } };
+const orderResponse = (order) => ({
+  ...order,
+  lines: order.lines.map(({ itemId, name, unit, orderedQuantity, receivedQuantity }) => ({
+    itemId, name, unit, quantity: orderedQuantity, receivedQuantity,
+    remainingQuantity: orderedQuantity - receivedQuantity,
+  })),
+});
 
 function movementNote(value) {
   if (value === undefined || value === null || value === "") return null;
@@ -141,10 +149,10 @@ async function activeItemForUpdate(tx, id) {
 async function orderForUpdate(tx, id) {
   const rows = await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id" = ${id} FOR UPDATE`;
   if (!rows.length) throw notFound("발주를 찾을 수 없습니다.");
-  return tx.order.findUnique({ where: { id } });
+  return tx.order.findUnique({ where: { id }, include: orderInclude });
 }
 
-async function recordStockChange(tx, item, { type, afterQuantity, note }, allowNoChange = false) {
+async function recordStockChange(tx, item, { type, afterQuantity, note, orderId }, allowNoChange = false) {
   quantity(afterQuantity, "stock");
   const quantityChange = afterQuantity - item.stock;
   if (!quantityChange && allowNoChange) return { item, movement: null };
@@ -158,6 +166,7 @@ async function recordStockChange(tx, item, { type, afterQuantity, note }, allowN
     beforeQuantity: item.stock,
     afterQuantity,
     note,
+    ...(orderId ? { orderId } : {}),
   } });
   return { item: updated, movement };
 }
@@ -347,51 +356,75 @@ export function createApp(prisma) {
     const order = await prisma.$transaction(async (tx) => {
       const queue = await tx.queueEntry.findMany({ include: { item: true }, orderBy: { createdAt: "asc" } });
       if (!queue.length) throw badRequest("발주 목록이 비어 있습니다.");
-      const lines = queue.map((entry) => ({
-        itemId: entry.itemId,
-        name: entry.item.name,
-        unit: entry.item.unit,
-        quantity: entry.quantity,
+      const lines = queue.map((entry, position) => ({
+        itemId: entry.itemId, position, name: entry.item.name, unit: entry.item.unit,
+        orderedQuantity: entry.quantity,
       }));
-      const created = await tx.order.create({ data: { lines } });
-      await tx.activityEvent.create({ data: { text: `발주 생성 · ${lines.map((line) => `${line.name} ${line.quantity}개`).join(", ")}` } });
+      const created = await tx.order.create({ data: { lines: { create: lines } }, include: orderInclude });
+      await tx.activityEvent.create({ data: { text: `발주 생성 · ${lines.map((line) => `${line.name} ${line.orderedQuantity}개`).join(", ")}` } });
       await tx.queueEntry.deleteMany({});
       return created;
     });
-    res.status(201).json({ data: order });
+    res.status(201).json({ data: orderResponse(order) });
   });
   router.get("/orders", async (_req, res) => {
-    const orders = await prisma.order.findMany({ orderBy: { createdAt: "desc" }, take: 50 });
-    res.json({ data: orders });
+    const orders = await prisma.order.findMany({ orderBy: { createdAt: "desc" }, take: 50, include: orderInclude });
+    res.json({ data: orders.map(orderResponse) });
   });
   router.get("/orders/:id", async (req, res) => {
-    const order = await prisma.order.findUnique({ where: { id: req.params.id } });
+    const order = await prisma.order.findUnique({ where: { id: req.params.id }, include: orderInclude });
     if (!order) throw notFound("발주를 찾을 수 없습니다.");
-    res.json({ data: order });
+    res.json({ data: orderResponse(order) });
   });
   router.post("/orders/:id/receive", async (req, res) => {
-    if (req.body && Object.keys(req.body).length) throw badRequest("입고 요청에는 본문을 입력하지 마세요.");
+    const body = req.body;
+    if (body && (typeof body !== "object" || Array.isArray(body) || Object.keys(body).some((key) => key !== "lines")))
+      throw badRequest("입고 요청에는 lines만 입력해 주세요.");
+    const requested = body?.lines;
+    if (requested !== undefined && (!Array.isArray(requested) || !requested.length || requested.some((line) =>
+      !line || typeof line !== "object" || Array.isArray(line) ||
+      Object.keys(line).some((key) => !["itemId", "quantity"].includes(key)) ||
+      typeof line.itemId !== "string" || !line.itemId)))
+      throw badRequest("입고 품목과 수량을 입력해 주세요.");
+    if (requested) {
+      const ids = requested.map((line) => line.itemId);
+      if (new Set(ids).size !== ids.length) throw badRequest("입고 품목이 중복되었습니다.");
+      requested.forEach((line) => quantity(line.quantity, "입고 수량", 1));
+    }
     const received = await prisma.$transaction(async (tx) => {
       const order = await orderForUpdate(tx, req.params.id);
-      if (order.status !== "ORDERED") throw conflict("이미 입고 처리한 발주입니다.");
-      if (!Array.isArray(order.lines) || !order.lines.length) throw conflict("입고할 품목이 없습니다.");
-      for (const line of [...order.lines].sort((a, b) => a.itemId.localeCompare(b.itemId))) {
-        const amount = quantity(line.quantity, "발주 수량", 1);
-        const item = await activeItemForUpdate(tx, line.itemId).catch((error) => {
+      if (!["ORDERED", "PARTIALLY_RECEIVED"].includes(order.status)) throw conflict("이미 입고가 완료된 발주입니다.");
+      if (!order.lines.length) throw conflict("입고할 품목이 없습니다.");
+      const receipt = requested ?? order.lines.filter((line) => line.receivedQuantity < line.orderedQuantity)
+        .map((line) => ({ itemId: line.itemId, quantity: line.orderedQuantity - line.receivedQuantity }));
+      if (!receipt.length) throw conflict("입고할 잔여 수량이 없습니다.");
+      for (const entry of receipt) {
+        const line = order.lines.find((candidate) => candidate.itemId === entry.itemId);
+        if (!line) throw badRequest("발주에 없는 품목입니다.");
+        if (entry.quantity > line.orderedQuantity - line.receivedQuantity) throw conflict("입고 수량이 잔여 발주 수량을 초과합니다.");
+      }
+      for (const entry of [...receipt].sort((a, b) => a.itemId.localeCompare(b.itemId))) {
+        const item = await activeItemForUpdate(tx, entry.itemId).catch((error) => {
           if (error.status === 404) throw conflict("삭제된 품목이 있어 입고할 수 없습니다.");
           throw error;
         });
         await recordStockChange(tx, item, {
-          type: "RESTOCK", afterQuantity: item.stock + amount, note: `발주 ${order.id} 입고`,
+          type: "RESTOCK", afterQuantity: item.stock + entry.quantity, note: `발주 ${order.id} 입고`, orderId: order.id,
         });
+        await tx.orderLine.update({ where: { orderId_itemId: { orderId: order.id, itemId: entry.itemId } },
+          data: { receivedQuantity: { increment: entry.quantity } } });
       }
+      const fullyReceived = order.lines.every((line) => line.receivedQuantity +
+        (receipt.find((entry) => entry.itemId === line.itemId)?.quantity ?? 0) === line.orderedQuantity);
       const updated = await tx.order.update({
-        where: { id: order.id }, data: { status: "RECEIVED", receivedAt: new Date() },
+        where: { id: order.id },
+        data: { status: fullyReceived ? "RECEIVED" : "PARTIALLY_RECEIVED", ...(fullyReceived ? { receivedAt: new Date() } : {}) },
+        include: orderInclude,
       });
-      await tx.activityEvent.create({ data: { text: `발주 입고 · ${order.lines.map((line) => `${line.name} ${line.quantity}개`).join(", ")}` } });
+      await tx.activityEvent.create({ data: { text: `발주 ${fullyReceived ? "입고 완료" : "부분 입고"} · ${receipt.map((entry) => `${order.lines.find((line) => line.itemId === entry.itemId).name} ${entry.quantity}개`).join(", ")}` } });
       return updated;
     });
-    res.json({ data: received });
+    res.json({ data: orderResponse(received) });
   });
   router.post("/orders/:id/complete", async (req, res) => {
     if (req.body && Object.keys(req.body).length) throw badRequest("완료 요청에는 본문을 입력하지 마세요.");
@@ -399,12 +432,12 @@ export function createApp(prisma) {
       const order = await orderForUpdate(tx, req.params.id);
       if (order.status !== "RECEIVED") throw conflict("입고된 발주만 완료할 수 있습니다.");
       const updated = await tx.order.update({
-        where: { id: order.id }, data: { status: "COMPLETED", completedAt: new Date() },
+        where: { id: order.id }, data: { status: "COMPLETED", completedAt: new Date() }, include: orderInclude,
       });
       await tx.activityEvent.create({ data: { text: `발주 완료 · ${order.id}` } });
       return updated;
     });
-    res.json({ data: completed });
+    res.json({ data: orderResponse(completed) });
   });
   app.use("/api", router);
   // The same resource paths are available directly for non-browser API clients.

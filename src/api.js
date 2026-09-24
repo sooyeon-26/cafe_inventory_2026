@@ -26,7 +26,7 @@ export const inventoryApi = {
   queue: () => request("/queue"),
   history: (cursor = null) => request(`/history?limit=20${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`),
   orders: () => request("/orders"),
-  receiveOrder: (id) => request(`/orders/${encodeURIComponent(id)}/receive`, { method: "POST" }),
+  receiveOrder: (id, lines) => request(`/orders/${encodeURIComponent(id)}/receive`, { method: "POST", ...(lines ? { body: JSON.stringify({ lines }) } : {}) }),
   completeOrder: (id) => request(`/orders/${encodeURIComponent(id)}/complete`, { method: "POST" }),
   stock: (id, stock, type) => request(`/items/${encodeURIComponent(id)}/stock`, {
     method: "PATCH", body: body({ stock, type }),

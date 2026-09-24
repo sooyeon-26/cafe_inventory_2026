@@ -175,7 +175,7 @@ export function useInventory(ordersOpen = false) {
         case "save": return inventoryApi.save(action.item);
         case "delete": return inventoryApi.delete(action.id);
         case "order": return inventoryApi.order();
-        case "receive": return inventoryApi.receiveOrder(action.id);
+        case "receive": return inventoryApi.receiveOrder(action.id, action.lines);
         case "complete": return inventoryApi.completeOrder(action.id);
         default: throw new Error("지원하지 않는 작업입니다.");
       }

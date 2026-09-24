@@ -252,12 +252,36 @@ export function History({ history, onClose, hasMore = false, loadingMore = false
   );
 }
 
-const orderStatusLabels = { ORDERED: "발주됨", RECEIVED: "입고됨", COMPLETED: "완료" };
+const orderStatusLabels = { ORDERED: "발주됨", PARTIALLY_RECEIVED: "부분 입고", RECEIVED: "입고됨", COMPLETED: "완료" };
+
+function OrderReceiptForm({ order, pending, working, onReceive }) {
+  const [quantities, setQuantities] = useState(() => Object.fromEntries(order.lines.map((line) => [line.itemId, line.remainingQuantity])));
+  const [error, setError] = useState("");
+  const submit = (event) => {
+    event.preventDefault();
+    const lines = order.lines.map((line) => ({ itemId: line.itemId, quantity: Number(quantities[line.itemId]) }))
+      .filter((line) => line.quantity > 0);
+    if (!lines.length) return setError("입고할 수량을 입력해 주세요.");
+    setError("");
+    onReceive(order.id, lines);
+  };
+  const allRemaining = order.lines.every((line) => Number(quantities[line.itemId]) === line.remainingQuantity);
+  return <form className="order-receipt-form" onSubmit={submit}>
+    {order.lines.map((line) => <label key={line.itemId} className="order-receipt-line">
+      <span><strong>{line.name}</strong><small>발주 {line.quantity} · 입고 {line.receivedQuantity} · 잔여 {line.remainingQuantity} {line.unit}</small></span>
+      <input aria-label={`${line.name} 입고 수량`} type="number" min="0" max={line.remainingQuantity} step="1"
+        value={quantities[line.itemId]} disabled={Boolean(pending) || !line.remainingQuantity}
+        onChange={(event) => setQuantities((current) => ({ ...current, [line.itemId]: event.target.value }))} />
+    </label>)}
+    {error && <p className="form-error" role="alert">{error}</p>}
+    <button className="primary" type="submit" disabled={Boolean(pending)}>{working ? "입고 처리 중..." : allRemaining ? "잔여 전체 입고" : "선택 수량 입고"}</button>
+  </form>;
+}
 
 export function Orders({ orders, loading, error, actionError, pending, onRetry, onReceive, onComplete, onClose }) {
   return (
     <Modal title="Orders" onClose={onClose} className="history-modal">
-      <p className="modal-description">발주 내역을 확인하고, 전체 입고 후 완료 처리하세요. 입고 시 현재고와 재고 변경 이력이 함께 기록됩니다.</p>
+      <p className="modal-description">발주 수량 중 실제 도착한 수량을 입력하세요. 입고할 때마다 현재고와 재고 변경 이력이 함께 기록됩니다.</p>
       {loading && <p className="loading-state" role="status">발주 내역을 불러오는 중...</p>}
       {error && <p className="form-error" role="alert">발주 내역을 불러오지 못했습니다. {error} <button onClick={onRetry}>다시 시도</button></p>}
       {actionError && <p className="form-error" role="alert">{actionError}</p>}
@@ -269,10 +293,10 @@ export function Orders({ orders, loading, error, actionError, pending, onRetry, 
               <strong>{orderStatusLabels[order.status]}</strong>
               <time>{new Intl.DateTimeFormat("ko-KR", { dateStyle: "medium", timeStyle: "short" }).format(new Date(order.createdAt))}</time>
             </div>
-            <p>{order.lines.map((line) => `${line.name} ${line.quantity} × ${line.unit}`).join(" · ")}</p>
-            {order.status === "ORDERED" && <button className="primary" onClick={() => onReceive(order.id)} disabled={Boolean(pending)}>
-              {working ? "입고 처리 중..." : "전체 입고 처리"}
-            </button>}
+            {["ORDERED", "PARTIALLY_RECEIVED"].includes(order.status) && <OrderReceiptForm
+              key={`${order.id}-${order.lines.map((line) => line.receivedQuantity).join("-")}`}
+              order={order} pending={pending} working={working} onReceive={onReceive} />}
+            {["RECEIVED", "COMPLETED"].includes(order.status) && <p>{order.lines.map((line) => `${line.name} ${line.receivedQuantity} / ${line.quantity} ${line.unit}`).join(" · ")}</p>}
             {order.status === "RECEIVED" && <button className="secondary" onClick={() => onComplete(order.id)} disabled={Boolean(pending)}>
               {working ? "완료 처리 중..." : "완료 처리"}
             </button>}

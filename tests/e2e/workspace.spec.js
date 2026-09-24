@@ -221,7 +221,7 @@ test("order receipt updates stock only after the server succeeds, then completes
   await page.getByRole("button", { name: "Orders" }).click();
   await expect(page.getByRole("dialog")).toContainText("발주됨");
   const gate = await holdNextRequest(page, "**/api/orders/*/receive", "POST");
-  await page.getByRole("button", { name: "전체 입고 처리" }).click();
+  await page.getByRole("button", { name: "잔여 전체 입고" }).click();
   await gate.seen;
   await expect(page.getByRole("button", { name: "입고 처리 중..." })).toBeDisabled();
   expect((await (await request.get("/api/items/oat")).json()).data.stock).toBe(2);
@@ -245,13 +245,38 @@ test("failed receipt keeps the order and stock unchanged with inline feedback", 
   await expect(page.getByTestId("queue-oat")).toHaveCount(0);
   await page.getByRole("button", { name: "Orders" }).click();
   const gate = await holdNextRequest(page, "**/api/orders/*/receive", "POST", true);
-  await page.getByRole("button", { name: "전체 입고 처리" }).click();
+  await page.getByRole("button", { name: "잔여 전체 입고" }).click();
   await gate.seen;
   gate.release();
   await expect(page.getByRole("dialog").getByRole("alert")).toContainText("일시적 오류");
   await expect(page.getByRole("dialog")).toContainText("발주됨");
   expect((await (await request.get("/api/items/oat")).json()).data.stock).toBe(2);
   await gate.remove();
+});
+
+test("partial receipt persists across reload and records each delivery", async ({ page, request }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "발주 목록에 추가" }).click();
+  await page.getByRole("button", { name: "발주하기" }).click();
+  await page.getByRole("button", { name: "Orders" }).click();
+  await page.getByRole("spinbutton", { name: "오트밀크 입고 수량" }).fill("6");
+  await page.getByRole("button", { name: "선택 수량 입고" }).click();
+  await expect(page.getByRole("dialog")).toContainText("부분 입고");
+  await expect(page.getByRole("dialog")).toContainText("잔여 2");
+  await expect(page.getByRole("spinbutton", { name: "오트밀크 입고 수량" })).toHaveValue("2");
+  expect((await (await request.get("/api/items/oat")).json()).data.stock).toBe(8);
+  await page.reload();
+  await page.getByRole("button", { name: "Orders" }).click();
+  await expect(page.getByRole("dialog")).toContainText("부분 입고");
+  await page.getByRole("button", { name: "잔여 전체 입고" }).click();
+  await expect(page.getByRole("dialog")).toContainText("입고됨");
+  expect((await (await request.get("/api/items/oat")).json()).data.stock).toBe(10);
+  await page.getByRole("button", { name: "완료 처리", exact: true }).click();
+  await expect(page.getByRole("dialog")).toContainText("완료");
+  await page.getByRole("button", { name: "닫기", exact: true }).click();
+  await page.getByRole("button", { name: "History" }).click();
+  await expect(page.getByRole("dialog")).toContainText("입고 +6");
+  await expect(page.getByRole("dialog")).toContainText("입고 +2");
 });
 
 test("History loads older pages without repeating entries", async ({ page }) => {

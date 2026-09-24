@@ -20,9 +20,13 @@ npm run dev
 
 ## 데이터와 API
 
+발주 품목은 `OrderLine` 관계형 테이블에 품목 ID, 발주 시점 이름·단위, 발주 수량, 누적 입고 수량으로 저장합니다. Migration은 기존 `Order.lines` JSON을 이 테이블로 옮기며, 기존 `RECEIVED`·`COMPLETED` 주문의 누적 입고량은 발주량과 같게 기록합니다. `ORDERED` 주문은 미입고로 유지하고 기존 재고 및 Movement는 변경하지 않습니다.
+
+입고는 일부 품목 또는 일부 수량만 처리할 수 있습니다. `ORDERED` → `PARTIALLY_RECEIVED` → `RECEIVED` → `COMPLETED` 순서이며 전량 입고되기 전에는 완료할 수 없습니다. 주문·품목 행을 잠근 한 트랜잭션에서 `OrderLine.receivedQuantity`, 현재고, 주문 상태, 주문 ID가 연결된 `RESTOCK` Movement를 함께 저장합니다. `POST /orders/:id/receive`에 `{ "lines": [{ "itemId": "oat", "quantity": 6 }] }`을 보내면 선택 수량만 입고하고, 본문을 생략하면 남은 수량을 모두 입고합니다. 잔여량 초과와 중복 입고는 거부합니다.
+
 `Item`은 화면의 `stock`, `minimum`, `target` 필드명을 유지합니다. `stock`은 현재 잔액이며, 변경 시 `StockMovement`에 유형·변경량·변경 전후 수량·메모·시각을 함께 기록합니다. 두 쓰기는 한 PostgreSQL 트랜잭션에서 처리하고 같은 품목 행을 잠가 동시 변경의 순서를 보장합니다. `QueueEntry`는 발주 대기열을, `ActivityEvent`는 품목·발주 활동 및 도입 이전의 문자열 기록을, `Order`는 발주 스냅샷과 상태를 저장합니다. 새 재고 변경은 `ActivityEvent`에 중복 기록하지 않습니다.
 
-발주 생성 시 `ORDERED`, 전체 입고 시 `RECEIVED`, 확인 후 `COMPLETED`로 전환합니다. 입고는 주문과 품목 행을 잠근 뒤 각 품목의 현재고 증가와 `RESTOCK` Movement, 주문 상태 변경을 한 트랜잭션에서 저장합니다. 중복 입고나 입고 전 완료는 거부합니다. 삭제된 품목이 포함된 과거 발주는 입고할 수 없으며 다른 품목의 부분 입고도 남지 않습니다. 발주 생성만으로 재고는 바뀌지 않습니다.
+발주 생성만으로 재고는 바뀌지 않습니다. 입고할 품목이 삭제된 경우 해당 요청의 재고·입고량·Movement 전체가 롤백됩니다.
 
 `USAGE`는 사용·소비, `RESTOCK`은 입고, `WASTE`는 폐기, `ADJUSTMENT`는 수동 조정입니다. 화면의 `−`는 `USAGE`, `+`와 직접 수량 입력은 `ADJUSTMENT`로 기록됩니다. 재고 변경 창에서 유형·수량·메모를 선택할 수 있습니다. 기존 DB의 `Item.stock`은 migration에서 바꾸지 않고 도입 시점의 시작 잔액으로 취급하므로 과거 이동 이벤트를 임의로 생성하지 않습니다. 새 품목의 초기 재고가 0보다 크면 `ADJUSTMENT` 시작 이벤트가 생성됩니다. 삭제된 품목은 화면에서 숨기되 DB 행과 Movement 관계를 보존합니다.
 
@@ -53,7 +57,7 @@ API의 성공 응답은 `{ "data": ... }`, 오류 응답은 `{ "error": { "code"
 | POST | `/orders` | 데모 발주 기록 및 대기열 비우기 |
 | GET | `/orders` | 최근 발주 50건과 상태 조회 |
 | GET | `/orders/:id` | 단일 발주 조회 |
-| POST | `/orders/:id/receive` | 전체 입고 및 `RESTOCK` Movement 기록 |
+| POST | `/orders/:id/receive` | 선택 수량 또는 잔여 전량 입고 및 `RESTOCK` Movement 기록 |
 | POST | `/orders/:id/complete` | 입고된 발주 완료 처리 |
 
 품목 응답에는 `leadTimeDays`, `averageDailyUsage`, `estimatedDaysUntilStockout`, `reorderStatus`, `recommendedQuantity`, `reorderReason`이 포함됩니다. 수량은 0~999,999의 정수이고 발주 수량은 1 이상이며 적정 재고는 최소 재고 이상이어야 합니다. 정상 상태에서도 적정 재고까지의 차이가 있으면 선택 보충량으로 표시합니다. 브라우저의 과거 `cafe-inventory:v1` localStorage 값은 읽거나 덮어쓰지 않습니다. 기존 브라우저에만 있던 사용자 지정 데이터가 있다면 별도로 내보낸 뒤 API로 이전해야 합니다.
@@ -79,7 +83,7 @@ npx playwright install chromium
 npm run test:e2e
 ```
 
-브라우저 테스트는 테스트 DB에 연결한 API와 프론트엔드를 자동으로 실행하고, Movement 유형과 History, 새로고침 후 유지, 품목 CRUD, 발주·필터·반응형 레이아웃을 확인합니다. 응답 지연 및 실패를 주입해 빠른 재고 클릭, 대기열 즉시 반영과 rollback도 확인합니다. 발주 입고·완료, History 페이지 추가 로드, 창 복귀 후 재조회도 확인합니다. API 테스트는 변경 전후 수량, 동시 요청의 순서, Movement 저장 실패와 다중 품목 입고 실패 시 전체 롤백도 확인합니다.
+브라우저 테스트는 테스트 DB에 연결한 API와 프론트엔드를 자동으로 실행하고, Movement 유형과 History, 새로고침 후 유지, 품목 CRUD, 발주·필터·반응형 레이아웃을 확인합니다. 응답 지연 및 실패를 주입해 빠른 재고 클릭, 대기열 즉시 반영과 rollback도 확인합니다. 부분 입고·완료, History 페이지 추가 로드, 창 복귀 후 재조회도 확인합니다. API 테스트는 변경 전후 수량, 동시 요청의 순서, Movement 저장 실패와 다중 품목 입고 실패 시 전체 롤백도 확인합니다.
 
 ## 구조
 

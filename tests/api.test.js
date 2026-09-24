@@ -167,7 +167,7 @@ test("item API persists CRUD, stock, queue and order changes in PostgreSQL", asy
     assert.ok((await call("/state")).payload.data.history.some((event) =>
       event.kind === "movement" && event.itemId === id));
     assert.ok(!(await call("/state")).payload.data.queue.some((entry) => entry.id === id));
-    assert.ok((await prisma.order.findUnique({ where: { id: order.payload.data.id } })).lines.length);
+    assert.equal(await prisma.orderLine.count({ where: { orderId: order.payload.data.id } }), 1);
 
     const fast = await call("/items", "POST", {
       name: "빠른 소진", category: "재료", unit: "개",
@@ -207,13 +207,29 @@ test("item API persists CRUD, stock, queue and order changes in PostgreSQL", asy
     const receivingOrder = await call("/orders", "POST");
     const receivingId = receivingOrder.payload.data.id;
     const beforeReceipt = await prisma.stockMovement.count({ where: { itemId: receiveId } });
+    assert.equal((await call(`/orders/${receivingId}/receive`, "POST", { lines: [{ itemId: receiveId, quantity: 0 }] })).status, 400);
+    assert.equal((await call(`/orders/${receivingId}/receive`, "POST", { lines: [{ itemId: receiveId, quantity: 1 }, { itemId: receiveId, quantity: 1 }] })).status, 400);
+    const partial = await call(`/orders/${receivingId}/receive`, "POST", { lines: [{ itemId: receiveId, quantity: 6 }] });
+    assert.equal(partial.status, 200);
+    assert.equal(partial.payload.data.status, "PARTIALLY_RECEIVED");
+    assert.equal(partial.payload.data.receivedAt, null);
+    assert.equal(partial.payload.data.lines.find((line) => line.itemId === receiveId).receivedQuantity, 6);
+    assert.equal(partial.payload.data.lines.find((line) => line.itemId === receiveId).remainingQuantity, 2);
+    assert.equal((await call(`/items/${receiveId}`)).payload.data.stock, 8);
+    assert.equal((await call(`/orders/${receivingId}/complete`, "POST")).status, 409);
+    assert.equal((await call(`/orders/${receivingId}/receive`, "POST", { lines: [{ itemId: receiveId, quantity: 3 }] })).status, 409);
+    assert.equal((await call(`/orders/${receivingId}`)).payload.data.lines.find((line) => line.itemId === receiveId).receivedQuantity, 6);
+    assert.equal((await call(`/items/${receiveId}`)).payload.data.stock, 8);
     const received = await call(`/orders/${receivingId}/receive`, "POST");
     assert.equal(received.status, 200);
     assert.equal(received.payload.data.status, "RECEIVED");
     assert.ok(received.payload.data.receivedAt);
+    assert.equal(received.payload.data.lines.find((line) => line.itemId === receiveId).remainingQuantity, 0);
     assert.equal((await call(`/items/${receiveId}`)).payload.data.stock, 10);
-    assert.equal(await prisma.stockMovement.count({ where: { itemId: receiveId } }), beforeReceipt + 1);
-    assert.equal((await prisma.stockMovement.findFirst({ where: { itemId: receiveId, type: "RESTOCK" } })).quantityChange, 8);
+    assert.equal(await prisma.stockMovement.count({ where: { itemId: receiveId } }), beforeReceipt + 2);
+    const receipts = await prisma.stockMovement.findMany({ where: { orderId: receivingId, itemId: receiveId }, orderBy: { createdAt: "asc" } });
+    assert.deepEqual(receipts.map((movement) => movement.quantityChange), [6, 2]);
+    assert.deepEqual(receipts.map((movement) => [movement.beforeQuantity, movement.afterQuantity]), [[2, 8], [8, 10]]);
     assert.equal((await call(`/orders/${receivingId}/receive`, "POST")).status, 409);
     const completed = await call(`/orders/${receivingId}/complete`, "POST");
     assert.equal(completed.payload.data.status, "COMPLETED");
@@ -235,6 +251,7 @@ test("item API persists CRUD, stock, queue and order changes in PostgreSQL", asy
     await call(`/items/${second.payload.data.id}`, "DELETE");
     assert.equal((await call(`/orders/${blockedOrder.payload.data.id}/receive`, "POST")).status, 409);
     assert.equal((await call(`/orders/${blockedOrder.payload.data.id}`)).payload.data.status, "ORDERED");
+    assert.ok((await call(`/orders/${blockedOrder.payload.data.id}`)).payload.data.lines.every((line) => line.receivedQuantity === 0));
     assert.equal((await call(`/items/${first.payload.data.id}`)).payload.data.stock, 2);
     assert.equal(await prisma.stockMovement.count({ where: { itemId: first.payload.data.id } }), firstMovementCount);
 

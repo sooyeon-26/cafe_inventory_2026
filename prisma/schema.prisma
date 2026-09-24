@@ -21,6 +21,7 @@ model Item {
   deletedAt    DateTime?
   queue        QueueEntry?
   movements    StockMovement[]
+  orderLines   OrderLine[]
 }
 
 enum StockMovementType {
@@ -39,10 +40,13 @@ model StockMovement {
   beforeQuantity Int
   afterQuantity  Int
   note           String?           @db.VarChar(240)
+  orderId        String?
   createdAt      DateTime          @default(now())
   item           Item              @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  order          Order?            @relation(fields: [orderId], references: [id], onDelete: Restrict)
 
   @@index([itemId, createdAt])
+  @@index([orderId])
   @@index([createdAt])
 }
 
@@ -61,6 +65,7 @@ model ActivityEvent {
 
 enum OrderStatus {
   ORDERED
+  PARTIALLY_RECEIVED
   RECEIVED
   COMPLETED
 }
@@ -71,7 +76,24 @@ model Order {
   status      OrderStatus @default(ORDERED)
   receivedAt  DateTime?
   completedAt DateTime?
-  lines       Json
+  lines       OrderLine[]
+  movements   StockMovement[]
 
   @@index([status, createdAt])
+}
+
+model OrderLine {
+  orderId          String
+  itemId           String
+  position         Int
+  name             String @db.VarChar(60)
+  unit             String @db.VarChar(20)
+  orderedQuantity  Int
+  receivedQuantity Int    @default(0)
+  order            Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  item             Item   @relation(fields: [itemId], references: [id], onDelete: Restrict)
+
+  @@id([orderId, itemId])
+  @@unique([orderId, position])
+  @@index([itemId])
 }
