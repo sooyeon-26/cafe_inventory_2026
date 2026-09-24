@@ -31,6 +31,7 @@ test("no usage falls back to target gap; lead-time buffer grows quantity when ne
   assert.equal(fallback.estimatedDaysUntilStockout, null);
   assert.equal(fallback.reorderStatus, "normal");
   assert.equal(fallback.recommendedQuantity, 2);
+  assert.match(fallback.reorderReason, /선택적으로 보충/);
   assert.equal(calculateRecommendation(item, 28).recommendedQuantity, 5);
   assert.equal(calculateRecommendation({ ...item, stock: 20 }, 0).recommendedQuantity, 0);
 });

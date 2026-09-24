@@ -212,6 +212,88 @@ test("order creation waits for the server before clearing the draft", async ({ p
   await gate.remove();
 });
 
+test("order receipt updates stock only after the server succeeds, then completes", async ({ page, request }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "발주 목록에 추가" }).click();
+  await expect(page.getByTestId("queue-oat")).toHaveCount(1);
+  await page.getByRole("button", { name: "발주하기" }).click();
+  await expect(page.getByTestId("queue-oat")).toHaveCount(0);
+  await page.getByRole("button", { name: "Orders" }).click();
+  await expect(page.getByRole("dialog")).toContainText("발주됨");
+  const gate = await holdNextRequest(page, "**/api/orders/*/receive", "POST");
+  await page.getByRole("button", { name: "전체 입고 처리" }).click();
+  await gate.seen;
+  await expect(page.getByRole("button", { name: "입고 처리 중..." })).toBeDisabled();
+  expect((await (await request.get("/api/items/oat")).json()).data.stock).toBe(2);
+  gate.release();
+  await expect(page.getByRole("dialog")).toContainText("입고됨");
+  await gate.remove();
+  await expect.poll(async () => (await (await request.get("/api/items/oat")).json()).data.stock).toBe(10);
+  await page.getByRole("button", { name: "완료 처리", exact: true }).click();
+  await expect(page.getByRole("dialog")).toContainText("완료");
+  await page.reload();
+  await expect(page.getByRole("spinbutton", { name: "오트밀크 현재 재고", exact: true })).toHaveValue("10");
+  await page.getByRole("button", { name: "History" }).click();
+  await expect(page.getByRole("dialog")).toContainText("입고 +8");
+});
+
+test("failed receipt keeps the order and stock unchanged with inline feedback", async ({ page, request }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "발주 목록에 추가" }).click();
+  await expect(page.getByTestId("queue-oat")).toHaveCount(1);
+  await page.getByRole("button", { name: "발주하기" }).click();
+  await expect(page.getByTestId("queue-oat")).toHaveCount(0);
+  await page.getByRole("button", { name: "Orders" }).click();
+  const gate = await holdNextRequest(page, "**/api/orders/*/receive", "POST", true);
+  await page.getByRole("button", { name: "전체 입고 처리" }).click();
+  await gate.seen;
+  gate.release();
+  await expect(page.getByRole("dialog").getByRole("alert")).toContainText("일시적 오류");
+  await expect(page.getByRole("dialog")).toContainText("발주됨");
+  expect((await (await request.get("/api/items/oat")).json()).data.stock).toBe(2);
+  await gate.remove();
+});
+
+test("History loads older pages without repeating entries", async ({ page }) => {
+  const prisma = new PrismaClient({ datasources: { db: { url: testUrl } } });
+  try {
+    await prisma.activityEvent.createMany({ data: Array.from({ length: 25 }, (_, index) => ({
+      text: `시연 기록 ${index}`,
+      date: new Date(Date.now() - index * 60_000),
+    })) });
+  } finally {
+    await prisma.$disconnect();
+  }
+  await page.goto("/");
+  await page.getByRole("button", { name: "History" }).click();
+  await expect(page.locator(".history-list article")).toHaveCount(20);
+  await page.getByRole("button", { name: "이전 기록 더 보기" }).click();
+  await expect(page.locator(".history-list article")).toHaveCount(25);
+  await expect(page.getByRole("button", { name: "이전 기록 더 보기" })).toHaveCount(0);
+});
+
+test("inventory refreshes after a focus event when another client changes stock", async ({ page, request }) => {
+  await page.goto("/");
+  const stock = page.getByRole("spinbutton", { name: "오트밀크 현재 재고", exact: true });
+  await expect(stock).toHaveValue("2");
+  const changed = await request.post("/api/items/oat/movements", {
+    data: { type: "ADJUSTMENT", quantityChange: 1 },
+  });
+  expect(changed.ok()).toBeTruthy();
+  await page.evaluate(() => window.dispatchEvent(new Event("visibilitychange")));
+  await expect(stock).toHaveValue("3");
+});
+
+test("Orders remains reachable on a narrow screen", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  const orders = page.getByRole("button", { name: "Orders" });
+  await expect(orders).toBeVisible();
+  await orders.click();
+  await expect(page.getByRole("dialog", { name: "Orders" })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
+});
+
 test("search, filters, queue removal and item selection", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("textbox", { name: "품목 검색" }).fill("바닐라");

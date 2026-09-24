@@ -27,7 +27,7 @@ export function calculateRecommendedQuantity(item, dailyAverageUsage) {
   return Math.min(Math.max(Math.max(item.target, leadTimeBuffer) - item.stock, 0), MAX_QUANTITY);
 }
 
-function reorderReason(item, status, daysUntilStockout) {
+function reorderReason(item, status, daysUntilStockout, recommendedQuantity) {
   if (item.stock <= 0) return "현재 재고가 없어 긴급 발주가 필요합니다.";
   if (daysUntilStockout !== null && daysUntilStockout < 1)
     return "최근 사용량 기준 1일 안에 재고가 소진될 것으로 예상됩니다.";
@@ -35,6 +35,8 @@ function reorderReason(item, status, daysUntilStockout) {
     return "현재 재고가 최소 재고 이하이므로 발주가 필요합니다.";
   if (status === "reorder")
     return `최근 사용량 기준 약 ${daysUntilStockout.toFixed(1)}일 후 소진이 예상되어, 납품 소요 ${item.leadTimeDays}일을 고려하면 지금 발주하는 것이 좋습니다.`;
+  if (status === "normal" && recommendedQuantity > 0)
+    return `발주가 필수인 상태는 아닙니다. 적정 재고까지 ${recommendedQuantity}개를 선택적으로 보충할 수 있습니다.`;
   if (daysUntilStockout === null) return "최근 사용 기록이 없어 최소·적정 재고 기준으로 판단합니다.";
   return "현재 소진 속도와 납품 소요기간을 고려하면 재고가 충분합니다.";
 }
@@ -43,12 +45,13 @@ export function calculateRecommendation(item, totalUsage) {
   const averageDailyUsage = calculateAverageDailyUsage(totalUsage);
   const estimatedDaysUntilStockout = calculateDaysUntilStockout(item.stock, averageDailyUsage);
   const reorderStatus = calculateReorderStatus(item, estimatedDaysUntilStockout);
+  const recommendedQuantity = calculateRecommendedQuantity(item, averageDailyUsage);
   return {
     averageDailyUsage,
     estimatedDaysUntilStockout,
     reorderStatus,
-    recommendedQuantity: calculateRecommendedQuantity(item, averageDailyUsage),
-    reorderReason: reorderReason(item, reorderStatus, estimatedDaysUntilStockout),
+    recommendedQuantity,
+    reorderReason: reorderReason(item, reorderStatus, estimatedDaysUntilStockout, recommendedQuantity),
   };
 }
 

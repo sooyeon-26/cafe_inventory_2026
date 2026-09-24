@@ -4,14 +4,16 @@ import ItemBrowser from "./components/ItemBrowser.jsx";
 import ItemWorkspace from "./components/ItemWorkspace.jsx";
 import OrderQueue from "./components/OrderQueue.jsx";
 import OrderFlow from "./components/OrderFlow.jsx";
-import { History, ItemForm, Modal, MovementForm } from "./components/Dialogs.jsx";
+import { History, ItemForm, Modal, MovementForm, Orders } from "./components/Dialogs.jsx";
 
 export default function App() {
-  const { state, act, loading, busy, saving, stockBusy, queueBusy, orderPending, error, actionError, retry } = useInventory();
+  const [dialog, setDialog] = useState(null);
+  const { state, act, loading, busy, saving, stockBusy, queueBusy, orderPending, error, actionError, retry,
+    orders, ordersLoading, ordersError, retryOrders, pendingOrderAction,
+    historyHasMore, historyLoadingMore, historyError, retryHistory, loadMoreHistory } = useInventory(dialog === "orders");
   const [selectedId, setSelectedId] = useState(state.items[0]?.id);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
-  const [dialog, setDialog] = useState(null);
   const [queueOpen, setQueueOpen] = useState(false);
   const [toast, setToast] = useState(null);
   const [pulse, setPulse] = useState(null);
@@ -65,7 +67,7 @@ export default function App() {
         </a>
         <nav aria-label="메인 메뉴">
           <button
-            className={dialog !== "history" ? "active" : ""}
+            className={dialog !== "history" && dialog !== "orders" ? "active" : ""}
             onClick={() => setDialog(null)}
           >
             Inventory
@@ -75,6 +77,12 @@ export default function App() {
             onClick={() => setDialog("history")}
           >
             History
+          </button>
+          <button
+            className={dialog === "orders" ? "active" : ""}
+            onClick={() => setDialog("orders")}
+          >
+            Orders
           </button>
         </nav>
         <div className="header-right">
@@ -223,7 +231,16 @@ export default function App() {
         />
       )}
       {dialog === "history" && (
-        <History history={state.history} onClose={() => setDialog(null)} />
+        <History history={state.history} hasMore={historyHasMore} loadingMore={historyLoadingMore}
+          error={historyError} onRetry={retryHistory} onLoadMore={loadMoreHistory} onClose={() => setDialog(null)} />
+      )}
+      {dialog === "orders" && (
+        <Orders orders={orders} loading={ordersLoading} error={ordersError} onRetry={retryOrders}
+          actionError={actionError} pending={pendingOrderAction} onReceive={async (id) => {
+            if (await act({ type: "receive", id })) notify("입고를 기록하고 재고를 반영했어요.");
+          }} onComplete={async (id) => {
+            if (await act({ type: "complete", id })) notify("발주를 완료했어요.");
+          }} onClose={() => setDialog(null)} />
       )}
       {dialog === "delete" && selected && (
         <Modal title="품목을 삭제할까요?" onClose={() => setDialog(null)}>

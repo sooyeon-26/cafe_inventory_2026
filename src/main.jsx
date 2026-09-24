@@ -6,7 +6,13 @@ import "./styles.css";
 import "./workspace.css";
 
 const queryClient = new QueryClient({
-  defaultOptions: { queries: { staleTime: 30_000, retry: false, refetchOnWindowFocus: false }, mutations: { retry: false } },
+  defaultOptions: { queries: {
+    staleTime: 15_000,
+    retry: false,
+    refetchOnWindowFocus: "always",
+    refetchOnReconnect: true,
+    refetchInterval: 60_000,
+  }, mutations: { retry: false } },
 });
 
 createRoot(document.getElementById("root")).render(

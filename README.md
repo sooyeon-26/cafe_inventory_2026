@@ -16,11 +16,13 @@ npm run dev
 
 `npm run dev`는 API(`http://127.0.0.1:3001`)와 Vite 프론트엔드(`http://127.0.0.1:5173`)를 함께 실행합니다. 각각 실행하려면 `npm run dev:backend`와 `npm run dev:frontend`를 별도 터미널에서 사용하세요. Vite 개발 서버는 `/api` 요청을 백엔드로 전달합니다. 배포 시에도 프론트엔드의 `/api` 요청을 API 서버로 라우팅해야 합니다.
 
-개발 중 스키마를 수정할 때는 `npm run db:migrate -- --name <변경명>`으로 migration을 생성·적용합니다. 기존 migration만 적용할 때는 `npm run db:deploy`를 사용합니다. `npm run db:seed`는 현재 데모 품목 10개를 ID 기준으로 upsert하고 기존 수정 값은 덮어쓰지 않아 반복 실행해도 중복 생성되지 않습니다. 프론트엔드 빌드는 `npm run build`, 빌드 결과 미리보기는 `npm run preview`입니다.
+개발 중 스키마를 수정할 때는 `npm run db:migrate -- --name <변경명>`으로 migration을 생성·적용합니다. 기존 migration만 적용할 때는 `npm run db:deploy`를 사용합니다. 주문 상태 migration은 기존 발주를 `ORDERED`로 유지합니다. `npm run db:seed`는 현재 데모 품목 10개를 ID 기준으로 upsert하고 기존 수정 값은 덮어쓰지 않아 반복 실행해도 중복 생성되지 않습니다. 포트폴리오 화면에 품목을 더 채우려면 기본 seed 실행 후 `npm run db:seed:showcase`를 선택적으로 실행하세요. 추가 품목 14개와 두 품목의 최근 7일 사용 이력이 등록되어, 최소 재고보다 많아도 납품 소요 전에 소진되어 발주가 필요한 사례를 보여줍니다. 다시 실행해도 기존 수정값과 이력을 덮어쓰거나 중복 생성하지 않습니다. 프론트엔드 빌드는 `npm run build`, 빌드 결과 미리보기는 `npm run preview`입니다.
 
 ## 데이터와 API
 
-`Item`은 화면의 `stock`, `minimum`, `target` 필드명을 유지합니다. `stock`은 현재 잔액이며, 변경 시 `StockMovement`에 유형·변경량·변경 전후 수량·메모·시각을 함께 기록합니다. 두 쓰기는 한 PostgreSQL 트랜잭션에서 처리하고 같은 품목 행을 잠가 동시 변경의 순서를 보장합니다. `QueueEntry`는 발주 대기열을, `ActivityEvent`는 품목·발주 활동 및 도입 이전의 문자열 기록을, `Order`는 데모 발주 스냅샷을 저장합니다. 새 재고 변경은 `ActivityEvent`에 중복 기록하지 않습니다.
+`Item`은 화면의 `stock`, `minimum`, `target` 필드명을 유지합니다. `stock`은 현재 잔액이며, 변경 시 `StockMovement`에 유형·변경량·변경 전후 수량·메모·시각을 함께 기록합니다. 두 쓰기는 한 PostgreSQL 트랜잭션에서 처리하고 같은 품목 행을 잠가 동시 변경의 순서를 보장합니다. `QueueEntry`는 발주 대기열을, `ActivityEvent`는 품목·발주 활동 및 도입 이전의 문자열 기록을, `Order`는 발주 스냅샷과 상태를 저장합니다. 새 재고 변경은 `ActivityEvent`에 중복 기록하지 않습니다.
+
+발주 생성 시 `ORDERED`, 전체 입고 시 `RECEIVED`, 확인 후 `COMPLETED`로 전환합니다. 입고는 주문과 품목 행을 잠근 뒤 각 품목의 현재고 증가와 `RESTOCK` Movement, 주문 상태 변경을 한 트랜잭션에서 저장합니다. 중복 입고나 입고 전 완료는 거부합니다. 삭제된 품목이 포함된 과거 발주는 입고할 수 없으며 다른 품목의 부분 입고도 남지 않습니다. 발주 생성만으로 재고는 바뀌지 않습니다.
 
 `USAGE`는 사용·소비, `RESTOCK`은 입고, `WASTE`는 폐기, `ADJUSTMENT`는 수동 조정입니다. 화면의 `−`는 `USAGE`, `+`와 직접 수량 입력은 `ADJUSTMENT`로 기록됩니다. 재고 변경 창에서 유형·수량·메모를 선택할 수 있습니다. 기존 DB의 `Item.stock`은 migration에서 바꾸지 않고 도입 시점의 시작 잔액으로 취급하므로 과거 이동 이벤트를 임의로 생성하지 않습니다. 새 품목의 초기 재고가 0보다 크면 `ADJUSTMENT` 시작 이벤트가 생성됩니다. 삭제된 품목은 화면에서 숨기되 DB 행과 Movement 관계를 보존합니다.
 
@@ -33,8 +35,8 @@ API의 성공 응답은 `{ "data": ... }`, 오류 응답은 `{ "error": { "code"
 | Method | Path | 기능 |
 | --- | --- | --- |
 | GET | `/health` | DB 연결 확인 |
-| GET | `/state` | 화면의 품목·대기열·History 조회 |
-| GET | `/history` | 활동 및 재고 변경 이력 조회 |
+| GET | `/state` | 호환용 품목·대기열·최근 History 20건 조회 |
+| GET | `/history?limit=20&cursor=...` | 활동 및 재고 변경 이력 커서 조회 (`entries`, `nextCursor`, `hasMore`) |
 | GET | `/items` | 전체 품목 조회 |
 | GET | `/items/:id` | 단일 품목 조회 |
 | POST | `/items` | 품목 등록 |
@@ -49,14 +51,18 @@ API의 성공 응답은 `{ "data": ... }`, 오류 응답은 `{ "error": { "code"
 | PATCH | `/queue/:id` | 발주 수량 수정 |
 | DELETE | `/queue/:id` | 발주 대기열 제거 |
 | POST | `/orders` | 데모 발주 기록 및 대기열 비우기 |
+| GET | `/orders` | 최근 발주 50건과 상태 조회 |
+| GET | `/orders/:id` | 단일 발주 조회 |
+| POST | `/orders/:id/receive` | 전체 입고 및 `RESTOCK` Movement 기록 |
+| POST | `/orders/:id/complete` | 입고된 발주 완료 처리 |
 
-품목 응답에는 `leadTimeDays`, `averageDailyUsage`, `estimatedDaysUntilStockout`, `reorderStatus`, `recommendedQuantity`, `reorderReason`이 포함됩니다. 수량은 0~999,999의 정수이고 발주 수량은 1 이상이며 적정 재고는 최소 재고 이상이어야 합니다. 발주는 입고를 의미하지 않으므로 재고를 변경하지 않습니다. 브라우저의 과거 `cafe-inventory:v1` localStorage 값은 읽거나 덮어쓰지 않습니다. 기존 브라우저에만 있던 사용자 지정 데이터가 있다면 별도로 내보낸 뒤 API로 이전해야 합니다.
+품목 응답에는 `leadTimeDays`, `averageDailyUsage`, `estimatedDaysUntilStockout`, `reorderStatus`, `recommendedQuantity`, `reorderReason`이 포함됩니다. 수량은 0~999,999의 정수이고 발주 수량은 1 이상이며 적정 재고는 최소 재고 이상이어야 합니다. 정상 상태에서도 적정 재고까지의 차이가 있으면 선택 보충량으로 표시합니다. 브라우저의 과거 `cafe-inventory:v1` localStorage 값은 읽거나 덮어쓰지 않습니다. 기존 브라우저에만 있던 사용자 지정 데이터가 있다면 별도로 내보낸 뒤 API로 이전해야 합니다.
 
 `POST /items/:id/movements`는 사용·입고·폐기에 `{ "type": "USAGE", "quantity": 2, "note": "오전 사용" }`처럼 양수 수량을 받고, 수동 조정에는 `{ "type": "ADJUSTMENT", "afterQuantity": 8 }` 또는 `{ "type": "ADJUSTMENT", "quantityChange": 1 }`을 받습니다. 빠른 조정과 기존 `PATCH /items/:id/stock`도 Movement를 생성합니다. History의 새 재고 항목은 Movement에서 읽으며, 이전 문자열 활동 기록은 그대로 남습니다.
 
 ## 프론트엔드 서버 상태
 
-TanStack Query가 품목 `['items']`, 발주 대기열 `['orders', 'draft']`, History `['history']`를 각각 캐시합니다. `src/queryKeys.js`에 품목 상세·Movement·주문 키도 같은 규칙으로 정의했습니다. 검색어, 필터, 선택 품목, 열려 있는 창은 React의 화면 상태로 유지합니다. 기존 `/state` API는 호환성을 위해 남겨두고, 화면은 범위별 조회 API를 사용합니다.
+TanStack Query가 품목 `['items']`, 발주 대기열 `['orders', 'draft']`, 발주 목록 `['orders']`, History `['history']`를 각각 캐시합니다. History는 20건씩 커서로 조회하고 더 보기로 이전 기록을 불러옵니다. 새 기록이 추가되어도 다음 페이지가 밀리지 않습니다. `src/queryKeys.js`에 품목 상세·Movement·주문 키도 같은 규칙으로 정의했습니다. 검색어, 필터, 선택 품목, 열려 있는 창은 React의 화면 상태로 유지합니다. 기존 `/state` API는 호환성을 위해 남겨두되 History는 최근 20건만 반환합니다. 화면은 범위별 조회 API를 사용합니다. 창으로 돌아오거나 연결이 복구되면 최신 데이터를 확인하고, 열린 화면에서는 60초 간격으로 다시 조회합니다.
 
 현재고 `+/-`와 대기열 추가·수량 변경·삭제는 요청 전에 캐시를 갱신합니다. 실패하면 변경 전 스냅샷과 아직 대기 중인 작업을 기준으로 복원하고 작은 오류 알림을 표시합니다. 같은 품목의 빠른 재고 클릭과 대기열 변경 요청은 순서대로 전송합니다. 재고 추천값은 대기 중에 수량 차이만 임시 반영하고 서버 조회 결과로 확정합니다. 재고 변경은 품목·History·Movement, 대기열 변경은 draft만 다시 확인합니다. 품목 등록·수정·삭제, 상세 재고 변경, 데모 발주 생성은 서버 응답 후 갱신하며 낙관적으로 완료 처리하지 않습니다.
 
@@ -73,7 +79,7 @@ npx playwright install chromium
 npm run test:e2e
 ```
 
-브라우저 테스트는 테스트 DB에 연결한 API와 프론트엔드를 자동으로 실행하고, Movement 유형과 History, 새로고침 후 유지, 품목 CRUD, 발주·필터·반응형 레이아웃을 확인합니다. 응답 지연 및 실패를 주입해 빠른 재고 클릭, 대기열 즉시 반영과 rollback도 확인합니다. API 테스트는 변경 전후 수량, 동시 요청의 순서, Movement 저장 실패 시 전체 롤백도 확인합니다.
+브라우저 테스트는 테스트 DB에 연결한 API와 프론트엔드를 자동으로 실행하고, Movement 유형과 History, 새로고침 후 유지, 품목 CRUD, 발주·필터·반응형 레이아웃을 확인합니다. 응답 지연 및 실패를 주입해 빠른 재고 클릭, 대기열 즉시 반영과 rollback도 확인합니다. 발주 입고·완료, History 페이지 추가 로드, 창 복귀 후 재조회도 확인합니다. API 테스트는 변경 전후 수량, 동시 요청의 순서, Movement 저장 실패와 다중 품목 입고 실패 시 전체 롤백도 확인합니다.
 
 ## 구조
 

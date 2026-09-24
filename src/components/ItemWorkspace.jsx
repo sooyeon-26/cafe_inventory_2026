@@ -151,7 +151,8 @@ export default function ItemWorkspace({
       <div className="suggested-section">
         <div className="suggestion-heading">
           <span className="eyebrow">SUGGESTED ORDER</span>
-          <span className="suggestion-note">최근 사용량과 납품 소요 반영</span>
+          <span className="suggestion-note">{item.reorderStatus === "normal" && suggested > 0
+            ? "선택 보충량 · 발주 필수 아님" : "최근 사용량과 납품 소요 반영"}</span>
         </div>
         <div className="suggested-body">
           <div className="suggested-number">

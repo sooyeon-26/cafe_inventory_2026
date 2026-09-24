@@ -14,6 +14,7 @@
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
     "db:seed": "prisma db seed",
+    "db:seed:showcase": "node prisma/seed-showcase.js",
     "test": "node --test tests/inventory.test.js",
     "test:e2e": "playwright test",
     "test:api": "node --test tests/api.test.js"

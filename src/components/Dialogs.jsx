@@ -204,7 +204,7 @@ export function MovementForm({ item, onSave, onClose, disabled = false }) {
     </Modal>
   );
 }
-export function History({ history, onClose }) {
+export function History({ history, onClose, hasMore = false, loadingMore = false, error, onRetry, onLoadMore }) {
   return (
     <Modal title="History" onClose={onClose} className="history-modal">
       <p className="modal-description">
@@ -243,6 +243,42 @@ export function History({ history, onClose }) {
             <p>재고를 조정하거나 발주하면 여기에 기록됩니다.</p>
           </div>
         )}
+      </div>
+      {error && <p className="form-error" role="alert">History를 불러오지 못했습니다. {error} <button onClick={onRetry}>다시 시도</button></p>}
+      {hasMore && <button className="secondary history-more" onClick={onLoadMore} disabled={loadingMore}>
+        {loadingMore ? "불러오는 중..." : "이전 기록 더 보기"}
+      </button>}
+    </Modal>
+  );
+}
+
+const orderStatusLabels = { ORDERED: "발주됨", RECEIVED: "입고됨", COMPLETED: "완료" };
+
+export function Orders({ orders, loading, error, actionError, pending, onRetry, onReceive, onComplete, onClose }) {
+  return (
+    <Modal title="Orders" onClose={onClose} className="history-modal">
+      <p className="modal-description">발주 내역을 확인하고, 전체 입고 후 완료 처리하세요. 입고 시 현재고와 재고 변경 이력이 함께 기록됩니다.</p>
+      {loading && <p className="loading-state" role="status">발주 내역을 불러오는 중...</p>}
+      {error && <p className="form-error" role="alert">발주 내역을 불러오지 못했습니다. {error} <button onClick={onRetry}>다시 시도</button></p>}
+      {actionError && <p className="form-error" role="alert">{actionError}</p>}
+      <div className="order-history-list">
+        {orders.map((order) => {
+          const working = pending?.id === order.id;
+          return <article key={order.id} className="order-history-item">
+            <div className="order-history-heading">
+              <strong>{orderStatusLabels[order.status]}</strong>
+              <time>{new Intl.DateTimeFormat("ko-KR", { dateStyle: "medium", timeStyle: "short" }).format(new Date(order.createdAt))}</time>
+            </div>
+            <p>{order.lines.map((line) => `${line.name} ${line.quantity} × ${line.unit}`).join(" · ")}</p>
+            {order.status === "ORDERED" && <button className="primary" onClick={() => onReceive(order.id)} disabled={Boolean(pending)}>
+              {working ? "입고 처리 중..." : "전체 입고 처리"}
+            </button>}
+            {order.status === "RECEIVED" && <button className="secondary" onClick={() => onComplete(order.id)} disabled={Boolean(pending)}>
+              {working ? "완료 처리 중..." : "완료 처리"}
+            </button>}
+          </article>;
+        })}
+        {!loading && !error && !orders.length && <p className="modal-description">아직 발주 내역이 없습니다.</p>}
       </div>
     </Modal>
   );

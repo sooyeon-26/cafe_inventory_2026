@@ -38,7 +38,7 @@ test("item API persists CRUD, stock, queue and order changes in PostgreSQL", asy
     assert.equal(items.status, 200);
     assert.ok(items.payload.data.some((item) => item.id === "oat"));
     assert.deepEqual((await call("/queue")).payload.data, []);
-    assert.deepEqual((await call("/history")).payload.data, []);
+    assert.deepEqual((await call("/history")).payload.data, { entries: [], nextCursor: null, hasMore: false });
     const oat = items.payload.data.find((item) => item.id === "oat");
     assert.equal(oat.leadTimeDays, 2);
     assert.equal(oat.averageDailyUsage, 0);
@@ -126,7 +126,7 @@ test("item API persists CRUD, stock, queue and order changes in PostgreSQL", asy
     await call(`/items/${id}/movements`, "POST", { type: "ADJUSTMENT", afterQuantity: 3 });
     const history = (await call("/state")).payload.data.history;
     assert.ok(history.some((event) => event.kind === "movement" && event.id === usage.payload.data.id));
-    assert.ok((await call("/history")).payload.data.some((event) => event.id === usage.payload.data.id));
+    assert.ok((await call("/history")).payload.data.entries.some((event) => event.id === usage.payload.data.id));
 
     const countBeforeFailure = await prisma.stockMovement.count({ where: { itemId: id } });
     await prisma.$executeRawUnsafe('ALTER TABLE "StockMovement" ADD CONSTRAINT "StockMovement_rollback_test" CHECK ("note" <> \'rollback-probe\')');
@@ -150,7 +150,11 @@ test("item API persists CRUD, stock, queue and order changes in PostgreSQL", asy
     assert.equal((await call("/queue")).payload.data.find((entry) => entry.id === id).quantity, 7);
     const order = await call("/orders", "POST");
     assert.equal(order.status, 201);
+    assert.equal(order.payload.data.status, "ORDERED");
     assert.equal(order.payload.data.lines[0].quantity, 7);
+    assert.equal((await call("/orders")).payload.data[0].id, order.payload.data.id);
+    assert.equal((await call(`/orders/${order.payload.data.id}`)).payload.data.status, "ORDERED");
+    assert.equal((await call(`/orders/${order.payload.data.id}/complete`, "POST")).status, 409);
     assert.equal((await call("/state")).payload.data.queue.length, 0);
     assert.equal((await call(`/items/${id}`)).payload.data.stock, 3);
 
@@ -194,6 +198,69 @@ test("item API persists CRUD, stock, queue and order changes in PostgreSQL", asy
       name: "재고 없음", category: "재료", unit: "개", stock: 0, minimum: 0, target: 10,
     });
     assert.equal(empty.payload.data.reorderStatus, "urgent");
+
+    const receiveItem = await call("/items", "POST", {
+      name: "입고 테스트", category: "재료", unit: "개", stock: 2, minimum: 5, target: 10,
+    });
+    const receiveId = receiveItem.payload.data.id;
+    await call("/queue", "POST", { id: receiveId });
+    const receivingOrder = await call("/orders", "POST");
+    const receivingId = receivingOrder.payload.data.id;
+    const beforeReceipt = await prisma.stockMovement.count({ where: { itemId: receiveId } });
+    const received = await call(`/orders/${receivingId}/receive`, "POST");
+    assert.equal(received.status, 200);
+    assert.equal(received.payload.data.status, "RECEIVED");
+    assert.ok(received.payload.data.receivedAt);
+    assert.equal((await call(`/items/${receiveId}`)).payload.data.stock, 10);
+    assert.equal(await prisma.stockMovement.count({ where: { itemId: receiveId } }), beforeReceipt + 1);
+    assert.equal((await prisma.stockMovement.findFirst({ where: { itemId: receiveId, type: "RESTOCK" } })).quantityChange, 8);
+    assert.equal((await call(`/orders/${receivingId}/receive`, "POST")).status, 409);
+    const completed = await call(`/orders/${receivingId}/complete`, "POST");
+    assert.equal(completed.payload.data.status, "COMPLETED");
+    assert.ok(completed.payload.data.completedAt);
+    assert.equal((await call(`/orders/${receivingId}/complete`, "POST")).status, 409);
+    assert.equal((await call(`/orders/${receivingId}`)).payload.data.status, "COMPLETED");
+    assert.equal((await call("/orders/missing/receive", "POST")).status, 404);
+
+    const first = await call("/items", "POST", {
+      name: "부분 입고 방지 1", category: "재료", unit: "개", stock: 2, minimum: 5, target: 10,
+    });
+    const second = await call("/items", "POST", {
+      name: "부분 입고 방지 2", category: "재료", unit: "개", stock: 1, minimum: 5, target: 10,
+    });
+    await call("/queue", "POST", { id: first.payload.data.id });
+    await call("/queue", "POST", { id: second.payload.data.id });
+    const blockedOrder = await call("/orders", "POST");
+    const firstMovementCount = await prisma.stockMovement.count({ where: { itemId: first.payload.data.id } });
+    await call(`/items/${second.payload.data.id}`, "DELETE");
+    assert.equal((await call(`/orders/${blockedOrder.payload.data.id}/receive`, "POST")).status, 409);
+    assert.equal((await call(`/orders/${blockedOrder.payload.data.id}`)).payload.data.status, "ORDERED");
+    assert.equal((await call(`/items/${first.payload.data.id}`)).payload.data.stock, 2);
+    assert.equal(await prisma.stockMovement.count({ where: { itemId: first.payload.data.id } }), firstMovementCount);
+
+    await prisma.activityEvent.createMany({ data: Array.from({ length: 25 }, (_, index) => ({
+      text: `페이지 테스트 ${index}`,
+    })) });
+    const totalEvents = await prisma.activityEvent.count() + await prisma.stockMovement.count();
+    const pages = [];
+    let cursor = null;
+    for (let page = 1; ; page += 1) {
+      const result = await call(`/history?limit=10${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+      assert.equal(result.status, 200);
+      assert.ok(result.payload.data.entries.length <= 10);
+      pages.push(...result.payload.data.entries);
+      if (page === 1) await prisma.activityEvent.create({ data: {
+        text: "페이지 조회 중 새 기록", date: new Date(Date.now() + 60_000),
+      } });
+      if (!result.payload.data.hasMore) break;
+      cursor = result.payload.data.nextCursor;
+      assert.ok(cursor);
+    }
+    assert.equal(pages.length, totalEvents);
+    assert.equal(new Set(pages.map((event) => event.id)).size, totalEvents);
+    assert.ok((await call("/state")).payload.data.history.length <= 20);
+    assert.equal((await call("/history?limit=0")).status, 400);
+    assert.equal((await call("/history?cursor=bad")).status, 400);
   } finally {
     server.close();
     await prisma.$disconnect();

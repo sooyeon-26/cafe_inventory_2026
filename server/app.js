@@ -17,6 +17,7 @@ class HttpError extends Error {
 
 const badRequest = (message) => new HttpError(400, "VALIDATION_ERROR", message);
 const notFound = (message) => new HttpError(404, "NOT_FOUND", message);
+const conflict = (message) => new HttpError(409, "CONFLICT", message);
 const quantity = (value, field, min = 0) => {
   if (!Number.isSafeInteger(value) || value < min || value > MAX_QUANTITY)
     throw badRequest(`${field}은(는) ${min}~${MAX_QUANTITY} 사이 정수여야 합니다.`);
@@ -74,7 +75,40 @@ async function itemResponses(db, items) {
 const historyResponse = (activity, movements) => [
   ...activity.map((event) => ({ ...event, kind: "activity" })),
   ...movements.map((movement) => ({ ...movement, kind: "movement", date: movement.createdAt })),
-].sort((a, b) => b.date - a.date);
+].sort((a, b) => b.date - a.date || a.kind.localeCompare(b.kind) || a.id.localeCompare(b.id));
+
+function decodeHistoryCursor(value) {
+  if (value === undefined) return null;
+  if (typeof value !== "string" || value.length > 512) throw badRequest("올바른 History 커서를 입력해 주세요.");
+  try {
+    const { date, kind, id } = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+    const parsedDate = new Date(date);
+    if (!Number.isFinite(parsedDate.getTime()) || !["activity", "movement"].includes(kind) ||
+        typeof id !== "string" || !id) throw new Error("Invalid cursor");
+    return { date: parsedDate, kind, id };
+  } catch {
+    throw badRequest("올바른 History 커서를 입력해 주세요.");
+  }
+}
+
+async function historyPage(db, cursor, limit) {
+  const activityWhere = cursor?.kind === "activity"
+    ? { OR: [{ date: { lt: cursor.date } }, { date: cursor.date, id: { gt: cursor.id } }] }
+    : cursor ? { date: { lt: cursor.date } } : undefined;
+  const movementWhere = cursor?.kind === "movement"
+    ? { OR: [{ createdAt: { lt: cursor.date } }, { createdAt: cursor.date, id: { gt: cursor.id } }] }
+    : cursor ? { createdAt: { lte: cursor.date } } : undefined;
+  const [activity, movements] = await Promise.all([
+    db.activityEvent.findMany({ where: activityWhere, orderBy: [{ date: "desc" }, { id: "asc" }], take: limit + 1 }),
+    db.stockMovement.findMany({ where: movementWhere, orderBy: [{ createdAt: "desc" }, { id: "asc" }], take: limit + 1 }),
+  ]);
+  const combined = historyResponse(activity, movements);
+  const entries = combined.slice(0, limit);
+  const last = entries.at(-1);
+  const hasMore = combined.length > limit;
+  const nextCursor = hasMore ? Buffer.from(JSON.stringify({ date: last.date, kind: last.kind, id: last.id })).toString("base64url") : null;
+  return { entries, nextCursor, hasMore };
+}
 
 const queueResponse = (queue) => queue.map((entry) => ({ id: entry.itemId, quantity: entry.quantity }));
 
@@ -102,6 +136,12 @@ async function activeItemForUpdate(tx, id) {
   const rows = await tx.$queryRaw`SELECT "id" FROM "Item" WHERE "id" = ${id} AND "deletedAt" IS NULL FOR UPDATE`;
   if (!rows.length) throw notFound("품목을 찾을 수 없습니다.");
   return tx.item.findUnique({ where: { id } });
+}
+
+async function orderForUpdate(tx, id) {
+  const rows = await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id" = ${id} FOR UPDATE`;
+  if (!rows.length) throw notFound("발주를 찾을 수 없습니다.");
+  return tx.order.findUnique({ where: { id } });
 }
 
 async function recordStockChange(tx, item, { type, afterQuantity, note }, allowNoChange = false) {
@@ -162,27 +202,29 @@ export function createApp(prisma) {
     res.json({ data: { status: "ok" } });
   });
   router.get("/state", async (_req, res) => {
-    const { queue, activity, movements, itemData } = await prisma.$transaction(async (tx) => {
-      const [items, queue, activity, movements] = await Promise.all([
+    const { queue, history, itemData } = await prisma.$transaction(async (tx) => {
+      const [items, queue, history] = await Promise.all([
         tx.item.findMany({ where: { deletedAt: null }, orderBy: { createdAt: "asc" } }),
         tx.queueEntry.findMany({ orderBy: { createdAt: "asc" } }),
-        tx.activityEvent.findMany({ orderBy: { date: "desc" } }),
-        tx.stockMovement.findMany({ orderBy: { createdAt: "desc" } }),
+        historyPage(tx, null, 20),
       ]);
-      return { queue, activity, movements, itemData: await itemResponses(tx, items) };
+      return { queue, history, itemData: await itemResponses(tx, items) };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
     res.json({ data: {
       items: itemData,
       queue: queueResponse(queue),
-      history: historyResponse(activity, movements),
+      history: history.entries,
     } });
   });
-  router.get("/history", async (_req, res) => {
-    const [activity, movements] = await prisma.$transaction([
-      prisma.activityEvent.findMany({ orderBy: { date: "desc" } }),
-      prisma.stockMovement.findMany({ orderBy: { createdAt: "desc" } }),
-    ], { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
-    res.json({ data: historyResponse(activity, movements) });
+  router.get("/history", async (req, res) => {
+    const limit = Number(req.query.limit ?? 20);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)
+      throw badRequest("limit은 1~100 사이 정수여야 합니다.");
+    const cursor = decodeHistoryCursor(req.query.cursor);
+    const history = await prisma.$transaction((tx) => historyPage(tx, cursor, limit), {
+      isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
+    });
+    res.json({ data: history });
   });
   router.get("/items", async (_req, res) => {
     const items = await prisma.item.findMany({ where: { deletedAt: null }, orderBy: { createdAt: "asc" } });
@@ -317,6 +359,52 @@ export function createApp(prisma) {
       return created;
     });
     res.status(201).json({ data: order });
+  });
+  router.get("/orders", async (_req, res) => {
+    const orders = await prisma.order.findMany({ orderBy: { createdAt: "desc" }, take: 50 });
+    res.json({ data: orders });
+  });
+  router.get("/orders/:id", async (req, res) => {
+    const order = await prisma.order.findUnique({ where: { id: req.params.id } });
+    if (!order) throw notFound("발주를 찾을 수 없습니다.");
+    res.json({ data: order });
+  });
+  router.post("/orders/:id/receive", async (req, res) => {
+    if (req.body && Object.keys(req.body).length) throw badRequest("입고 요청에는 본문을 입력하지 마세요.");
+    const received = await prisma.$transaction(async (tx) => {
+      const order = await orderForUpdate(tx, req.params.id);
+      if (order.status !== "ORDERED") throw conflict("이미 입고 처리한 발주입니다.");
+      if (!Array.isArray(order.lines) || !order.lines.length) throw conflict("입고할 품목이 없습니다.");
+      for (const line of [...order.lines].sort((a, b) => a.itemId.localeCompare(b.itemId))) {
+        const amount = quantity(line.quantity, "발주 수량", 1);
+        const item = await activeItemForUpdate(tx, line.itemId).catch((error) => {
+          if (error.status === 404) throw conflict("삭제된 품목이 있어 입고할 수 없습니다.");
+          throw error;
+        });
+        await recordStockChange(tx, item, {
+          type: "RESTOCK", afterQuantity: item.stock + amount, note: `발주 ${order.id} 입고`,
+        });
+      }
+      const updated = await tx.order.update({
+        where: { id: order.id }, data: { status: "RECEIVED", receivedAt: new Date() },
+      });
+      await tx.activityEvent.create({ data: { text: `발주 입고 · ${order.lines.map((line) => `${line.name} ${line.quantity}개`).join(", ")}` } });
+      return updated;
+    });
+    res.json({ data: received });
+  });
+  router.post("/orders/:id/complete", async (req, res) => {
+    if (req.body && Object.keys(req.body).length) throw badRequest("완료 요청에는 본문을 입력하지 마세요.");
+    const completed = await prisma.$transaction(async (tx) => {
+      const order = await orderForUpdate(tx, req.params.id);
+      if (order.status !== "RECEIVED") throw conflict("입고된 발주만 완료할 수 있습니다.");
+      const updated = await tx.order.update({
+        where: { id: order.id }, data: { status: "COMPLETED", completedAt: new Date() },
+      });
+      await tx.activityEvent.create({ data: { text: `발주 완료 · ${order.id}` } });
+      return updated;
+    });
+    res.json({ data: completed });
   });
   app.use("/api", router);
   // The same resource paths are available directly for non-browser API clients.

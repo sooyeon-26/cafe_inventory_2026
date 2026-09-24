@@ -59,8 +59,19 @@ model ActivityEvent {
   text String   @db.Text
 }
 
+enum OrderStatus {
+  ORDERED
+  RECEIVED
+  COMPLETED
+}
+
 model Order {
-  id        String   @id @default(uuid())
-  createdAt DateTime @default(now())
-  lines     Json
+  id          String      @id @default(uuid())
+  createdAt   DateTime    @default(now())
+  status      OrderStatus @default(ORDERED)
+  receivedAt  DateTime?
+  completedAt DateTime?
+  lines       Json
+
+  @@index([status, createdAt])
 }

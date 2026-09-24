@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { inventoryApi } from "./api.js";
 import { queryKeys } from "./queryKeys.js";
 
@@ -28,11 +28,17 @@ function projectStock(item, operations) {
   };
 }
 
-export function useInventory() {
+export function useInventory(ordersOpen = false) {
   const client = useQueryClient();
   const itemsQuery = useQuery({ queryKey: queryKeys.items, queryFn: inventoryApi.items });
   const draftQuery = useQuery({ queryKey: queryKeys.draft, queryFn: inventoryApi.queue });
-  const historyQuery = useQuery({ queryKey: queryKeys.history, queryFn: inventoryApi.history });
+  const historyQuery = useInfiniteQuery({
+    queryKey: queryKeys.history,
+    queryFn: ({ pageParam }) => inventoryApi.history(pageParam),
+    initialPageParam: null,
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+  });
+  const ordersQuery = useQuery({ queryKey: queryKeys.orders, queryFn: inventoryApi.orders, enabled: ordersOpen });
   const [actionError, setActionError] = useState("");
   const chains = useRef(new Map());
   const stockBase = useRef(new Map());
@@ -169,21 +175,35 @@ export function useInventory() {
         case "save": return inventoryApi.save(action.item);
         case "delete": return inventoryApi.delete(action.id);
         case "order": return inventoryApi.order();
+        case "receive": return inventoryApi.receiveOrder(action.id);
+        case "complete": return inventoryApi.completeOrder(action.id);
         default: throw new Error("지원하지 않는 작업입니다.");
       }
     },
     onSuccess: async (_result, action) => {
-      const keys = action.type === "order"
-        ? [queryKeys.orders, queryKeys.history]
-        : action.type === "delete"
-          ? [queryKeys.items, queryKeys.draft, queryKeys.history]
-          : action.type === "save"
-            ? [queryKeys.items, queryKeys.history]
-            : [queryKeys.items, queryKeys.history, queryKeys.movements(action.id)];
+      let keys;
+      switch (action.type) {
+        case "order":
+        case "complete":
+          keys = [queryKeys.orders, queryKeys.history];
+          break;
+        case "receive":
+          keys = [queryKeys.orders, queryKeys.items, queryKeys.history, queryKeys.movementsAll];
+          break;
+        case "delete":
+          keys = [queryKeys.items, queryKeys.draft, queryKeys.history];
+          break;
+        case "save":
+          keys = [queryKeys.items, queryKeys.history];
+          break;
+        default:
+          keys = [queryKeys.items, queryKeys.history, queryKeys.movements(action.id)];
+      }
       await Promise.all(keys.map((queryKey) => client.invalidateQueries({ queryKey })));
     },
-    onError: (_error, action) => setActionError(action.type === "order"
-      ? "발주를 처리하지 못했습니다." : "변경사항을 저장하지 못했습니다."),
+    onError: (error, action) => setActionError(["receive", "complete"].includes(action.type)
+      ? error.message : action.type === "order"
+        ? "발주를 처리하지 못했습니다." : "변경사항을 저장하지 못했습니다."),
   });
 
   const act = async (action) => {
@@ -201,7 +221,8 @@ export function useInventory() {
   const loading = itemsQuery.isPending || draftQuery.isPending || historyQuery.isPending;
   const loadError = itemsQuery.error || draftQuery.error || historyQuery.error;
   const state = itemsQuery.data && draftQuery.data && historyQuery.data
-    ? { items: itemsQuery.data, queue: draftQuery.data, history: historyQuery.data }
+    ? { items: itemsQuery.data, queue: draftQuery.data,
+      history: historyQuery.data.pages.flatMap((page) => page.entries) }
     : emptyState;
   return {
     state,
@@ -214,6 +235,16 @@ export function useInventory() {
     queueBusy: queuePending.current.length > 0,
     error: loadError ? `재고 정보를 불러오지 못했습니다. ${loadError.message}` : "",
     actionError,
+    orders: ordersQuery.data ?? [],
+    ordersLoading: ordersQuery.isPending,
+    ordersError: ordersQuery.error?.message ?? "",
+    retryOrders: () => ordersQuery.refetch(),
+    pendingOrderAction: criticalMutation.isPending ? criticalMutation.variables : null,
+    historyHasMore: historyQuery.hasNextPage,
+    historyLoadingMore: historyQuery.isFetchingNextPage,
+    historyError: historyQuery.error?.message ?? "",
+    retryHistory: () => historyQuery.refetch(),
+    loadMoreHistory: () => historyQuery.fetchNextPage(),
     retry: () => Promise.all([itemsQuery.refetch(), draftQuery.refetch(), historyQuery.refetch()]),
   };
 }
