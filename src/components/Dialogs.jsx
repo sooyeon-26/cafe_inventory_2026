@@ -64,6 +64,7 @@ export function ItemForm({ item, onSave, onClose, disabled = false }) {
             stock: Number(form.get("stock")),
             minimum: Number(form.get("minimum")),
             target: Number(form.get("target")),
+            leadTimeDays: Number(form.get("leadTimeDays")),
           };
           if (!next.name || !next.category || !next.unit)
             return setError("품목명, 카테고리, 단위를 입력해 주세요.");
@@ -128,6 +129,10 @@ export function ItemForm({ item, onSave, onClose, disabled = false }) {
             </label>
           ))}
         </div>
+        <label>
+          납품 소요 (일)
+          <input type="number" name="leadTimeDays" required min="1" max="365" step="1" defaultValue={item?.leadTimeDays ?? 2} />
+        </label>
         {error && (
           <p role="alert" className="form-error">
             {error}

@@ -37,6 +37,12 @@ test("item API persists CRUD, stock, queue and order changes in PostgreSQL", asy
     const items = await call("/items");
     assert.equal(items.status, 200);
     assert.ok(items.payload.data.some((item) => item.id === "oat"));
+    const oat = items.payload.data.find((item) => item.id === "oat");
+    assert.equal(oat.leadTimeDays, 2);
+    assert.equal(oat.averageDailyUsage, 0);
+    assert.equal(oat.estimatedDaysUntilStockout, null);
+    assert.equal(oat.reorderStatus, "reorder");
+    assert.equal(oat.recommendedQuantity, 8);
 
     const created = await call("/items", "POST", {
       name: "API 테스트 품목", category: "음료", unit: "1L",
@@ -46,6 +52,7 @@ test("item API persists CRUD, stock, queue and order changes in PostgreSQL", asy
     const id = created.payload.data.id;
     assert.ok(id);
     assert.ok(created.payload.data.createdAt);
+    assert.equal(created.payload.data.leadTimeDays, 2);
     const opening = (await call(`/items/${id}/movements`)).payload.data;
     assert.equal(opening.length, 1);
     assert.deepEqual(
@@ -61,6 +68,9 @@ test("item API persists CRUD, stock, queue and order changes in PostgreSQL", asy
     const patched = await call(`/items/${id}`, "PATCH", { name: "수정 품목", minimum: 4, target: 8 });
     assert.equal(patched.status, 200);
     assert.equal(patched.payload.data.minimum, 4);
+    assert.equal((await call(`/items/${id}`, "PATCH", { leadTimeDays: 3 })).payload.data.leadTimeDays, 3);
+    assert.equal((await call(`/items/${id}`, "PATCH", { leadTimeDays: 0 })).status, 400);
+    assert.equal((await call(`/items/${id}`, "PATCH", { leadTimeDays: 366 })).status, 400);
     assert.equal((await call(`/items/${id}`, "PATCH", { target: 1 })).status, 400);
     const manualEdit = await call(`/items/${id}`, "PATCH", { stock: 4 });
     assert.equal(manualEdit.payload.data.stock, 4);
@@ -79,6 +89,7 @@ test("item API persists CRUD, stock, queue and order changes in PostgreSQL", asy
       [-2, 3, 1],
     );
     assert.equal((await call(`/items/${id}`)).payload.data.stock, 1);
+    assert.equal((await call(`/items/${id}`)).payload.data.averageDailyUsage, 2 / 7);
     const restock = await call(`/items/${id}/movements`, "POST", { type: "RESTOCK", quantity: 10 });
     assert.deepEqual(
       [restock.payload.data.quantityChange, restock.payload.data.beforeQuantity, restock.payload.data.afterQuantity],
@@ -94,6 +105,7 @@ test("item API persists CRUD, stock, queue and order changes in PostgreSQL", asy
       [adjusted.payload.data.quantityChange, adjusted.payload.data.beforeQuantity, adjusted.payload.data.afterQuantity],
       [-7, 10, 3],
     );
+    assert.equal((await call(`/items/${id}`)).payload.data.averageDailyUsage, 2 / 7);
     assert.equal((await call(`/items/${id}/movements`, "POST", { type: "USAGE", quantity: 4 })).status, 400);
     assert.equal((await call(`/items/${id}/movements`, "POST", { type: "RESTOCK", quantity: 0 })).status, 400);
     assert.equal((await call(`/items/${id}/movements`, "POST", { type: "UNKNOWN", quantity: 1 })).status, 400);
@@ -148,6 +160,36 @@ test("item API persists CRUD, stock, queue and order changes in PostgreSQL", asy
       event.kind === "movement" && event.itemId === id));
     assert.ok(!(await call("/state")).payload.data.queue.some((entry) => entry.id === id));
     assert.ok((await prisma.order.findUnique({ where: { id: order.payload.data.id } })).lines.length);
+
+    const fast = await call("/items", "POST", {
+      name: "빠른 소진", category: "재료", unit: "개",
+      stock: 36, minimum: 5, target: 10, leadTimeDays: 2,
+    });
+    const fastId = fast.payload.data.id;
+    assert.equal(fast.payload.data.reorderStatus, "normal");
+    const consumed = await call(`/items/${fastId}/movements`, "POST", { type: "USAGE", quantity: 28 });
+    assert.equal(consumed.status, 201);
+    const recommendation = (await call(`/items/${fastId}`)).payload.data;
+    assert.equal(recommendation.stock, 8);
+    assert.equal(recommendation.averageDailyUsage, 4);
+    assert.equal(recommendation.estimatedDaysUntilStockout, 2);
+    assert.equal(recommendation.reorderStatus, "reorder");
+    assert.equal(recommendation.recommendedQuantity, 5);
+    assert.equal((await call("/state")).payload.data.items.find((item) => item.id === fastId).recommendedQuantity, 5);
+    assert.equal((await call("/queue", "POST", { id: fastId })).payload.data.quantity, 5);
+    await prisma.stockMovement.update({
+      where: { id: consumed.payload.data.id },
+      data: { createdAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000) },
+    });
+    const expired = (await call(`/items/${fastId}`)).payload.data;
+    assert.equal(expired.averageDailyUsage, 0);
+    assert.equal(expired.estimatedDaysUntilStockout, null);
+    assert.equal(expired.reorderStatus, "normal");
+    assert.equal(expired.recommendedQuantity, 2);
+    const empty = await call("/items", "POST", {
+      name: "재고 없음", category: "재료", unit: "개", stock: 0, minimum: 0, target: 10,
+    });
+    assert.equal(empty.payload.data.reorderStatus, "urgent");
   } finally {
     server.close();
     await prisma.$disconnect();

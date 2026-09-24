@@ -1,15 +1,10 @@
 import { QuantityControl, StatusBadge } from "./Controls.jsx";
-import { suggestedOrder } from "../inventory.js";
+import { statusOf } from "../inventory.js";
 
 export function StockRange({ item }) {
   const max = Math.ceil(Math.max(item.target * 1.4, item.stock * 1.15, 1));
   const percent = (value) => `${(value / max) * 100}%`;
-  const tone =
-    item.stock <= item.minimum
-      ? "urgent"
-      : item.stock < item.target
-        ? "low"
-        : "normal";
+  const tone = statusOf(item);
   return (
     <div
       className="stock-range"
@@ -19,8 +14,8 @@ export function StockRange({ item }) {
       <div className="range-heading">
         <span>재고 수준</span>
         <span>
-          {item.stock < item.minimum
-            ? "최소 재고 미만"
+          {item.stock <= item.minimum
+            ? "최소 재고 이하"
             : item.stock < item.target
               ? "적정 재고까지 여유를 채워보세요"
               : "충분한 재고를 보유하고 있어요"}
@@ -92,7 +87,7 @@ export default function ItemWorkspace({
         <p>품목을 등록하고 재고와 발주를 한곳에서 관리하세요.</p>
       </section>
     );
-  const suggested = suggestedOrder(item);
+  const suggested = item.recommendedQuantity;
   return (
     <section className="item-workspace" aria-label="선택 품목 상세">
       <div className="detail-topline">
@@ -153,28 +148,19 @@ export default function ItemWorkspace({
       <div className="suggested-section">
         <div className="suggestion-heading">
           <span className="eyebrow">SUGGESTED ORDER</span>
-          <span className="suggestion-note">적정 재고 − 현재 재고</span>
+          <span className="suggestion-note">최근 사용량과 납품 소요 반영</span>
         </div>
         <div className="suggested-body">
           <div className="suggested-number">
             {suggested}
             <span>개</span>
           </div>
-          <p>
-            {suggested ? (
-              <>
-                적정 재고 {item.target}개까지
-                <br />
-                {suggested}개 부족합니다.
-              </>
-            ) : (
-              <>
-                지금은 충분해요.
-                <br />
-                추가 발주가 필요하지 않습니다.
-              </>
-            )}
-          </p>
+          <p>{item.reorderReason}</p>
+        </div>
+        <div className="reorder-metrics">
+          <span>최근 7일 평균 사용 <strong>{item.averageDailyUsage.toFixed(1)}개/일</strong></span>
+          <span>예상 소진 <strong>{item.estimatedDaysUntilStockout === null ? "최근 사용 기록 없음" : `${item.estimatedDaysUntilStockout.toFixed(1)}일`}</strong></span>
+          <span>납품 소요 <strong>{item.leadTimeDays}일</strong></span>
         </div>
         <button
           className={`add-order ${queued ? "queued" : ""}`}

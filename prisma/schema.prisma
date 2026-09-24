@@ -8,18 +8,19 @@ datasource db {
 }
 
 model Item {
-  id        String          @id @default(uuid())
-  name      String          @db.VarChar(60)
-  category  String          @db.VarChar(30)
-  unit      String          @db.VarChar(20)
-  stock     Int
-  minimum   Int
-  target    Int
-  createdAt DateTime        @default(now())
-  updatedAt DateTime        @updatedAt
-  deletedAt DateTime?
-  queue     QueueEntry?
-  movements StockMovement[]
+  id           String          @id @default(uuid())
+  name         String          @db.VarChar(60)
+  category     String          @db.VarChar(30)
+  unit         String          @db.VarChar(20)
+  stock        Int
+  minimum      Int
+  target       Int
+  leadTimeDays Int             @default(2)
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+  deletedAt    DateTime?
+  queue        QueueEntry?
+  movements    StockMovement[]
 }
 
 enum StockMovementType {

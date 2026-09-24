@@ -24,6 +24,10 @@ npm run dev
 
 `USAGE`는 사용·소비, `RESTOCK`은 입고, `WASTE`는 폐기, `ADJUSTMENT`는 수동 조정입니다. 화면의 `−`는 `USAGE`, `+`와 직접 수량 입력은 `ADJUSTMENT`로 기록됩니다. 재고 변경 창에서 유형·수량·메모를 선택할 수 있습니다. 기존 DB의 `Item.stock`은 migration에서 바꾸지 않고 도입 시점의 시작 잔액으로 취급하므로 과거 이동 이벤트를 임의로 생성하지 않습니다. 새 품목의 초기 재고가 0보다 크면 `ADJUSTMENT` 시작 이벤트가 생성됩니다. 삭제된 품목은 화면에서 숨기되 DB 행과 Movement 관계를 보존합니다.
 
+품목별 `leadTimeDays`는 납품 소요일이며 기본값은 2일(허용 범위 1~365일)입니다. Migration은 기존 품목에 기본값만 추가하고 재고와 Movement를 보존합니다. 서버는 조회 시점부터 최근 7×24시간의 `USAGE` 변경량만 합쳐 7로 나눈 일평균 사용량을 계산합니다. 기록이 없는 날도 분모에 포함하며, 사용 기록이 없으면 평균 0·예상 소진일 `null`로 반환합니다. 예상 소진일은 `stock / averageDailyUsage`입니다.
+
+발주 상태 우선순위는 **긴급**(재고 0 또는 예상 소진 1일 미만) → **발주 필요**(재고가 최소 재고 이하 또는 예상 소진일이 납품 소요일 이하) → **정상**입니다. 사용 기록이 없는 품목은 최소 재고 기준으로 판단하고 권장 수량은 기존 `max(target - stock, 0)`을 유지합니다. 사용 기록이 있으면 권장 수량은 `max(target, minimum + ceil(일평균 사용량 × 납품 소요일)) - stock`의 양수 부분으로 계산하며 발주 수량 상한을 적용합니다. `RESTOCK`, `WASTE`, `ADJUSTMENT`는 사용량에 포함하지 않습니다. 화면과 발주 대기열은 서버에서 반환한 같은 추천 수량을 사용합니다.
+
 API의 성공 응답은 `{ "data": ... }`, 오류 응답은 `{ "error": { "code": "...", "message": "..." } }` 형식입니다. 아래 경로는 `/api` 접두사로도 사용할 수 있습니다.
 
 | Method | Path | 기능 |
@@ -44,7 +48,7 @@ API의 성공 응답은 `{ "data": ... }`, 오류 응답은 `{ "error": { "code"
 | DELETE | `/queue/:id` | 발주 대기열 제거 |
 | POST | `/orders` | 데모 발주 기록 및 대기열 비우기 |
 
-기존 발주 제안량은 `max(적정 재고 - 현재 재고, 0)`입니다. 수량은 0~999,999의 정수이고 발주 수량은 1 이상이며 적정 재고는 최소 재고 이상이어야 합니다. 발주는 입고를 의미하지 않으므로 재고를 변경하지 않습니다. 브라우저의 과거 `cafe-inventory:v1` localStorage 값은 읽거나 덮어쓰지 않습니다. 기존 브라우저에만 있던 사용자 지정 데이터가 있다면 별도로 내보낸 뒤 API로 이전해야 합니다.
+품목 응답에는 `leadTimeDays`, `averageDailyUsage`, `estimatedDaysUntilStockout`, `reorderStatus`, `recommendedQuantity`, `reorderReason`이 포함됩니다. 수량은 0~999,999의 정수이고 발주 수량은 1 이상이며 적정 재고는 최소 재고 이상이어야 합니다. 발주는 입고를 의미하지 않으므로 재고를 변경하지 않습니다. 브라우저의 과거 `cafe-inventory:v1` localStorage 값은 읽거나 덮어쓰지 않습니다. 기존 브라우저에만 있던 사용자 지정 데이터가 있다면 별도로 내보낸 뒤 API로 이전해야 합니다.
 
 `POST /items/:id/movements`는 사용·입고·폐기에 `{ "type": "USAGE", "quantity": 2, "note": "오전 사용" }`처럼 양수 수량을 받고, 수동 조정에는 `{ "type": "ADJUSTMENT", "afterQuantity": 8 }` 또는 `{ "type": "ADJUSTMENT", "quantityChange": 1 }`을 받습니다. 빠른 조정과 기존 `PATCH /items/:id/stock`도 Movement를 생성합니다. History의 새 재고 항목은 Movement에서 읽으며, 이전 문자열 활동 기록은 그대로 남습니다.
 
@@ -66,8 +70,8 @@ npm run test:e2e
 ## 구조
 
 - `prisma/schema.prisma`, `prisma/migrations/`, `prisma/seed.js`: PostgreSQL 모델, migration, 데모 품목
-- `server/app.js`, `server/index.js`: Express API와 서버 실행
+- `server/app.js`, `server/index.js`, `server/reorder.js`: Express API, 서버 실행, 사용량 기반 추천 계산
 - `src/api.js`, `src/useInventory.js`: API 호출과 화면 로딩·저장·오류 상태
 - `src/App.jsx`, `src/components/`: 기존 워크스페이스 화면과 인터랙션
-- `src/inventory.js`: 재고 상태·발주 제안·필터 계산
+- `src/inventory.js`: 서버가 제공한 발주 상태에 따른 화면 필터
 - `tests/`: 계산 단위 테스트, API 및 브라우저 통합 테스트

@@ -141,7 +141,7 @@ test("search, filters, queue removal and item selection", async ({ page }) => {
   await page.getByRole("button", { name: "발주 필요", exact: true }).click();
   await expect(page.locator(".item-row")).toHaveCount(5);
   await page.getByRole("button", { name: "긴급", exact: true }).click();
-  await expect(page.locator(".item-row")).toHaveCount(3);
+  await expect(page.locator(".item-row")).toHaveCount(0);
 });
 test("create, validate, edit and delete item", async ({ page }) => {
   await page.goto("/");
@@ -258,18 +258,44 @@ test("filter counts follow live stock while search retains inventory totals", as
   const urgent = page.getByRole("button", { name: "긴급", exact: true });
   const normal = page.getByRole("button", { name: "정상", exact: true });
   const low = page.getByRole("button", { name: "발주 필요", exact: true });
-  await expect(urgent).toHaveText("긴급3");
+  await expect(urgent).toHaveText("긴급0");
   await page
     .getByRole("spinbutton", { name: "오트밀크 현재 재고", exact: true })
-    .fill("5");
-  await expect(urgent).toHaveText("긴급2");
+    .fill("6");
+  await expect(urgent).toHaveText("긴급0");
   await expect(normal).toHaveText("정상6");
   await expect(low).toHaveText("발주4");
   await expect(page.locator(".item-workspace .status")).toHaveText("정상");
-  await expect(page.locator(".suggested-number")).toHaveText("5개");
+  await expect(page.locator(".suggested-number")).toHaveText("4개");
   await page.getByRole("textbox", { name: "품목 검색" }).fill("오트");
   await expect(normal).toHaveText("정상6");
   await expect(page.locator(".item-row")).toHaveCount(1);
+});
+
+test("usage pace and lead time explain an early reorder after refresh", async ({ page, request }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "품목 등록" }).click();
+  await page.getByLabel("품목명").fill("리드타임 테스트");
+  await page.getByLabel("카테고리").fill("재료");
+  await page.getByLabel("단위").fill("개");
+  await page.getByRole("dialog").getByRole("spinbutton", { name: "현재 재고", exact: true }).fill("36");
+  await page.getByRole("dialog").getByRole("spinbutton", { name: "최소 재고", exact: true }).fill("5");
+  await page.getByRole("dialog").getByRole("spinbutton", { name: "적정 재고", exact: true }).fill("10");
+  await page.getByLabel("납품 소요 (일)").fill("2");
+  await page.getByRole("dialog").getByRole("button", { name: "품목 등록" }).click();
+  await expect(page.getByRole("heading", { name: "리드타임 테스트" })).toBeVisible();
+  const item = (await (await request.get("/api/items")).json()).data.find((entry) => entry.name === "리드타임 테스트");
+  await request.post(`/api/items/${item.id}/movements`, { data: { type: "USAGE", quantity: 28 } });
+  await page.reload();
+  await page.getByRole("button", { name: "리드타임 테스트" }).click();
+  await expect(page.locator(".item-workspace .status")).toHaveText("발주 필요");
+  await expect(page.locator(".suggested-number")).toHaveText("5개");
+  await expect(page.locator(".reorder-metrics")).toContainText("4.0개/일");
+  await expect(page.locator(".reorder-metrics")).toContainText("2.0일");
+  await expect(page.locator(".reorder-metrics")).toContainText("납품 소요 2일");
+  await expect(page.locator(".suggested-body p")).toContainText("지금 발주");
+  await page.getByRole("button", { name: "발주 목록에 추가" }).click();
+  await expect(page.getByRole("spinbutton", { name: "리드타임 테스트 발주 수량" })).toHaveValue("5");
 });
 
 test("curved flow, replayable feedback and a populated three-item queue", async ({
@@ -420,19 +446,20 @@ test("queue summary follows short lists and long lists scroll without false anch
     name: "발주 목록에 추가",
     exact: true,
   });
-  for (const name of [
+  for (const [index, name] of [
     "오트밀크",
     "바닐라 시럽",
     "테이크아웃 컵",
     "하우스 블렌드 원두",
     "우유",
-  ]) {
+  ].entries()) {
     await page
       .locator(".item-row")
       .filter({ has: page.getByText(name, { exact: true }) })
       .click();
     await add.click();
-    const count = await page.locator(".queue-item").count();
+    const count = index + 1;
+    await expect(page.locator(".queue-item")).toHaveCount(count);
     if (count <= 3) {
       const gap = await page
         .locator(".order-summary")

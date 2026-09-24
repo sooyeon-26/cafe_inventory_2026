@@ -793,6 +793,19 @@ svg {
   line-height: 1.8;
   color: #96a4b6;
 }
+.reorder-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 16px;
+  padding: 0 0 14px;
+  color: #7c8b9f;
+  font-size: 10px;
+}
+.reorder-metrics strong {
+  margin-left: 5px;
+  color: #4d607a;
+  font-weight: 600;
+}
 .suggested-arrow {
   margin-left: auto;
   color: #9fbbe0;

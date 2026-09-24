@@ -4,7 +4,6 @@ import ItemBrowser from "./components/ItemBrowser.jsx";
 import ItemWorkspace from "./components/ItemWorkspace.jsx";
 import OrderQueue from "./components/OrderQueue.jsx";
 import OrderFlow from "./components/OrderFlow.jsx";
-import { suggestedOrder } from "./inventory.js";
 import { History, ItemForm, Modal, MovementForm } from "./components/Dialogs.jsx";
 
 export default function App() {
@@ -44,8 +43,7 @@ export default function App() {
     setPulse({
       id: selected.id,
       key: crypto.randomUUID(),
-      quantity:
-        result.quantity ?? suggestedOrder(selected),
+      quantity: result.quantity,
     });
     if (window.innerWidth <= 1100) setQueueOpen(true);
     notify(

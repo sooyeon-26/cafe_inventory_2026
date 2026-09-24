@@ -1,8 +1,9 @@
 import express from "express";
 import { Prisma } from "@prisma/client";
 import { MAX_QUANTITY } from "../src/inventory.js";
+import { recommendationsForItems } from "./reorder.js";
 
-const itemFields = ["name", "category", "unit", "stock", "minimum", "target"];
+const itemFields = ["name", "category", "unit", "stock", "minimum", "target", "leadTimeDays"];
 const textLimits = { name: 60, category: 30, unit: 20 };
 const movementTypes = new Set(["USAGE", "RESTOCK", "WASTE", "ADJUSTMENT"]);
 
@@ -27,7 +28,7 @@ function itemInput(body, previous) {
     throw badRequest("품목 정보를 입력해 주세요.");
   if (Object.keys(body).some((key) => !itemFields.includes(key)))
     throw badRequest("지원하지 않는 품목 필드가 있습니다.");
-  if (!previous && itemFields.some((key) => !(key in body)))
+  if (!previous && itemFields.some((key) => key !== "leadTimeDays" && !(key in body)))
     throw badRequest("품목 정보를 모두 입력해 주세요.");
   if (previous && !Object.keys(body).length)
     throw badRequest("수정할 필드를 입력해 주세요.");
@@ -40,6 +41,9 @@ function itemInput(body, previous) {
       if (typeof value !== "string" || !value.trim() || value.trim().length > textLimits[key])
         throw badRequest(`${key}은(는) 1~${textLimits[key]}자여야 합니다.`);
       data[key] = value.trim();
+    } else if (key === "leadTimeDays") {
+      data[key] = quantity(body[key], key, 1);
+      if (data[key] > 365) throw badRequest("leadTimeDays는 1~365일이어야 합니다.");
     } else {
       data[key] = quantity(body[key], key);
     }
@@ -57,9 +61,15 @@ const itemResponse = (item) => ({
   stock: item.stock,
   minimum: item.minimum,
   target: item.target,
+  leadTimeDays: item.leadTimeDays,
   createdAt: item.createdAt,
   updatedAt: item.updatedAt,
 });
+
+async function itemResponses(db, items) {
+  const recommendations = await recommendationsForItems(db, items);
+  return items.map((item) => ({ ...itemResponse(item), ...recommendations.get(item.id) }));
+}
 
 function movementNote(value) {
   if (value === undefined || value === null || value === "") return null;
@@ -145,30 +155,33 @@ export function createApp(prisma) {
     res.json({ data: { status: "ok" } });
   });
   router.get("/state", async (_req, res) => {
-    const [items, queue, activity, movements] = await prisma.$transaction([
-      prisma.item.findMany({ where: { deletedAt: null }, orderBy: { createdAt: "asc" } }),
-      prisma.queueEntry.findMany({ orderBy: { createdAt: "asc" } }),
-      prisma.activityEvent.findMany({ orderBy: { date: "desc" } }),
-      prisma.stockMovement.findMany({ orderBy: { createdAt: "desc" } }),
-    ], { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+    const { queue, activity, movements, itemData } = await prisma.$transaction(async (tx) => {
+      const [items, queue, activity, movements] = await Promise.all([
+        tx.item.findMany({ where: { deletedAt: null }, orderBy: { createdAt: "asc" } }),
+        tx.queueEntry.findMany({ orderBy: { createdAt: "asc" } }),
+        tx.activityEvent.findMany({ orderBy: { date: "desc" } }),
+        tx.stockMovement.findMany({ orderBy: { createdAt: "desc" } }),
+      ]);
+      return { queue, activity, movements, itemData: await itemResponses(tx, items) };
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
     const history = [
       ...activity.map((event) => ({ ...event, kind: "activity" })),
       ...movements.map((movement) => ({ ...movement, kind: "movement", date: movement.createdAt })),
     ].sort((a, b) => b.date - a.date);
     res.json({ data: {
-      items: items.map(itemResponse),
+      items: itemData,
       queue: queue.map((entry) => ({ id: entry.itemId, quantity: entry.quantity })),
       history,
     } });
   });
   router.get("/items", async (_req, res) => {
     const items = await prisma.item.findMany({ where: { deletedAt: null }, orderBy: { createdAt: "asc" } });
-    res.json({ data: items.map(itemResponse) });
+    res.json({ data: await itemResponses(prisma, items) });
   });
   router.get("/items/:id", async (req, res) => {
     const item = await prisma.item.findUnique({ where: { id: req.params.id } });
     if (!item || item.deletedAt) throw notFound("품목을 찾을 수 없습니다.");
-    res.json({ data: itemResponse(item) });
+    res.json({ data: (await itemResponses(prisma, [item]))[0] });
   });
   router.post("/items", async (req, res) => {
     const data = itemInput(req.body);
@@ -180,7 +193,7 @@ export function createApp(prisma) {
         type: "ADJUSTMENT", afterQuantity: data.stock, note: "초기 재고",
       })).item;
     });
-    res.status(201).json({ data: itemResponse(item) });
+    res.status(201).json({ data: (await itemResponses(prisma, [item]))[0] });
   });
   router.patch("/items/:id", async (req, res) => {
     const item = await prisma.$transaction(async (tx) => {
@@ -198,7 +211,7 @@ export function createApp(prisma) {
         })).item;
       return updated;
     });
-    res.json({ data: itemResponse(item) });
+    res.json({ data: (await itemResponses(prisma, [item]))[0] });
   });
   router.patch("/items/:id/stock", async (req, res) => {
     if (!req.body || !("stock" in req.body) || Object.keys(req.body).some((key) => !["stock", "type", "note"].includes(key)))
@@ -212,7 +225,7 @@ export function createApp(prisma) {
         type, afterQuantity: stock, note,
       }, true)).item;
     });
-    res.json({ data: itemResponse(item) });
+    res.json({ data: (await itemResponses(prisma, [item]))[0] });
   });
   router.post("/items/:id/movements", async (req, res) => {
     const movement = await prisma.$transaction(async (tx) => {
@@ -257,7 +270,7 @@ export function createApp(prisma) {
       if (!item || item.deletedAt) throw notFound("품목을 찾을 수 없습니다.");
       const existing = await tx.queueEntry.findUnique({ where: { itemId: item.id } });
       if (existing) return existing;
-      const suggested = Math.max(item.target - item.stock, 0);
+      const suggested = (await recommendationsForItems(tx, [item])).get(item.id).recommendedQuantity;
       if (!suggested) throw badRequest("현재 품목은 추가 발주가 필요하지 않습니다.");
       return tx.queueEntry.create({ data: { itemId: item.id, quantity: suggested } });
     });

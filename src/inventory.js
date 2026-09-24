@@ -1,11 +1,8 @@
 export const MAX_QUANTITY = 999999;
 
-export const suggestedOrder = (item) => Math.max(item.target - item.stock, 0);
-
 export function statusOf(item) {
-  if (item.stock < item.minimum)
-    return item.stock <= item.minimum / 2 ? "urgent" : "low";
-  return "normal";
+  return item.reorderStatus === "urgent" ? "urgent"
+    : item.reorderStatus === "reorder" ? "low" : "normal";
 }
 
 export const statusLabels = {
@@ -23,7 +20,7 @@ export function filterItems(items, query, filter) {
         .includes(search) &&
       (filter === "all" ||
         (filter === "low"
-          ? item.stock < item.minimum
+          ? statusOf(item) !== "normal"
           : statusOf(item) === filter)),
   );
 }
