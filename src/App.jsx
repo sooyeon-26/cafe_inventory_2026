@@ -4,6 +4,8 @@ import ItemBrowser from "./components/ItemBrowser.jsx";
 import ItemWorkspace from "./components/ItemWorkspace.jsx";
 import OrderQueue from "./components/OrderQueue.jsx";
 import OrderFlow from "./components/OrderFlow.jsx";
+import ReorderNotice from "./components/ReorderNotice.jsx";
+import { useReorderNotice } from "./useReorderNotice.js";
 import { History, ItemForm, Modal, MovementForm, Orders } from "./components/Dialogs.jsx";
 
 export default function App() {
@@ -21,6 +23,8 @@ export default function App() {
   const selected =
     state.items.find((item) => item.id === selectedId) ?? state.items[0];
   const queued = state.queue.some((item) => item.id === selected?.id);
+  const notice = useReorderNotice(state.items, state.queue, !loading && !error);
+  const noticeOpen = notice.visible && !loading && !error && !dialog && !queueOpen;
   useEffect(() => {
     if (!toast) return;
     const timer = setTimeout(() => setToast(null), 4000);
@@ -48,11 +52,25 @@ export default function App() {
     if (window.innerWidth <= 1100) setQueueOpen(true);
     const result = await act({ type: "queue-add", id: selected.id });
     if (!result) return;
+    notice.dismiss();
     notify(
       queued
         ? "이미 목록에 있어요. 발주 수량을 확인해 주세요."
         : `${selected.name}을(를) 발주 목록에 담았어요.`,
     );
+  };
+  const openNoticeTarget = () => {
+    notice.dismiss();
+    if (notice.nextItem) {
+      setQuery("");
+      setFilter("low");
+      setSelectedId(notice.nextItem.id);
+      workspaceRef.current?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+    } else if (window.innerWidth <= 1100) {
+      setQueueOpen(true);
+    } else {
+      workspaceRef.current?.querySelector(".create-order")?.focus();
+    }
   };
   return (
     <div className="app-shell">
@@ -165,8 +183,10 @@ export default function App() {
             }
             onRemove={(id) => act({ type: "queue-remove", id })}
             onOrder={async () => {
-              if (await act({ type: "order" }))
+              if (await act({ type: "order" })) {
+                notice.dismiss();
                 notify("데모 발주를 생성했어요. History에서 확인할 수 있습니다.");
+              }
             }}
             disabled={busy || loading}
             orderDisabled={queueBusy}
@@ -192,8 +212,10 @@ export default function App() {
           </span>
         </footer>
       </main>
+      {noticeOpen && <ReorderNotice urgentCount={notice.urgentCount} reorderCount={notice.reorderCount}
+        nextItem={notice.nextItem} onAction={openNoticeTarget} onDismiss={notice.dismiss} />}
       {toast && (
-        <div className="toast" role="status" key={toast.id}>
+        <div className={`toast ${noticeOpen ? "toast-with-notice" : ""}`} role="status" key={toast.id}>
           <span>✓</span>
           {toast.text}
           <button aria-label="알림 닫기" onClick={() => setToast(null)}>
@@ -201,7 +223,7 @@ export default function App() {
           </button>
         </div>
       )}
-      {actionError && <div className="toast error" role="alert">{actionError}</div>}
+      {actionError && <div className={`toast error ${noticeOpen ? "toast-with-notice" : ""}`} role="alert">{actionError}</div>}
       {(dialog === "new" || dialog === "edit") && (
         <ItemForm
           item={dialog === "edit" ? selected : null}

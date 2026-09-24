@@ -1119,6 +1119,78 @@ svg {
   max-width: calc(100% - 40px);
   animation: reveal 0.2s ease;
 }
+.reorder-notice {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 19;
+  width: min(330px, calc(100vw - 32px));
+  padding: 18px 19px 17px;
+  border: 1px solid #dce6d8;
+  border-left: 3px solid #7a9d7a;
+  border-radius: 15px;
+  background: #fbfdf9;
+  box-shadow: 0 14px 44px #24362424;
+  color: #2c402f;
+  animation: reveal 0.2s ease;
+}
+.reorder-notice.is-urgent {
+  border-left-color: #b96d4f;
+}
+.reorder-notice-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.reorder-notice-kicker {
+  color: #789077;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+}
+.reorder-notice-close {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  color: #738171;
+  font-size: 20px;
+  line-height: 1;
+}
+.reorder-notice strong {
+  display: block;
+  font-size: 15px;
+  font-weight: 700;
+}
+.reorder-notice strong span {
+  padding: 0 4px;
+  color: #a5b2a2;
+  font-weight: 400;
+}
+.reorder-notice p {
+  margin-top: 7px;
+  color: #627260;
+  font-size: 11px;
+  line-height: 1.55;
+}
+.reorder-notice-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 13px;
+  padding: 7px 0;
+  color: #286549;
+  font-size: 11px;
+  font-weight: 700;
+}
+.reorder-notice-action:hover:not(:disabled) {
+  background: transparent;
+  color: #184c35;
+}
+.reorder-notice-action span {
+  font-size: 16px;
+  line-height: 1;
+}
 .toast > span {
   color: #b1d1a4;
 }
@@ -1130,6 +1202,36 @@ svg {
   color: #d5dfd1;
   font-size: 19px;
   margin-left: 10px;
+}
+@media (max-width: 1100px) {
+  .reorder-notice {
+    right: 16px;
+    bottom: 10px;
+    width: min(300px, calc(100vw - 32px));
+    padding: 10px 14px 9px;
+  }
+  .reorder-notice-top {
+    position: absolute;
+    right: 8px;
+    top: 6px;
+    margin: 0;
+  }
+  .reorder-notice-kicker,
+  .reorder-notice p {
+    display: none;
+  }
+  .reorder-notice strong {
+    padding-right: 22px;
+    font-size: 12px;
+  }
+  .reorder-notice-action {
+    margin-top: 2px;
+    padding: 2px 0;
+    font-size: 10px;
+  }
+  .toast.toast-with-notice {
+    bottom: 82px;
+  }
 }
 .storage-error {
   padding: 12px 18px;

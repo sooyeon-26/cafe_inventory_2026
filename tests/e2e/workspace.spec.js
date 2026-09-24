@@ -70,6 +70,41 @@ test("complete stock and ordering flow persists on refresh without console error
   expect(errors).toEqual([]);
 });
 
+test("reorder notice summarizes needs once per tab and returns when a normal item needs ordering", async ({ page }) => {
+  await page.goto("/");
+  const notice = page.getByTestId("reorder-notice");
+  await expect(notice).toBeVisible();
+  await expect(notice).toContainText("발주 필요");
+  await notice.getByRole("button", { name: "발주 필요 품목 보기" }).click();
+  await expect(notice).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "발주 필요", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await page.reload();
+  await expect(notice).toHaveCount(0);
+
+  await page.locator(".item-row").filter({ hasText: "우유" }).click();
+  await page.getByRole("button", { name: "재고 변경", exact: true }).click();
+  await page.getByLabel("변경 유형").selectOption({ label: "사용" });
+  await page.getByLabel("변경 수량").fill("3");
+  await page.getByRole("dialog").getByRole("button", { name: "변경 저장" }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(notice).toBeVisible();
+  await expect(notice).toContainText("우유");
+  await notice.getByRole("button", { name: "발주 알림 닫기" }).click();
+  await expect(notice).toHaveCount(0);
+});
+
+test("reorder notice remains actionable on a narrow screen", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  const notice = page.getByTestId("reorder-notice");
+  await expect(notice).toBeVisible();
+  await notice.getByRole("button", { name: "발주 필요 품목 보기" }).click();
+  await expect(notice).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "발주 필요", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("button", { name: "발주 목록에 추가", exact: true }).click();
+  await expect(page.locator(".order-queue")).toBeVisible();
+});
+
 test("quick controls and detailed movement types appear in History after refresh", async ({ page, request }) => {
   await page.goto("/");
   const stock = page.getByRole("spinbutton", { name: "오트밀크 현재 재고", exact: true });
