@@ -16,7 +16,24 @@ npm run dev
 
 `npm run dev`는 API(`http://127.0.0.1:3001`)와 Vite 프론트엔드(`http://127.0.0.1:5173`)를 함께 실행합니다. 각각 실행하려면 `npm run dev:backend`와 `npm run dev:frontend`를 별도 터미널에서 사용하세요. Vite 개발 서버는 `/api` 요청을 백엔드로 전달합니다. 배포 시에도 프론트엔드의 `/api` 요청을 API 서버로 라우팅해야 합니다.
 
-개발 중 스키마를 수정할 때는 `npm run db:migrate -- --name <변경명>`으로 migration을 생성·적용합니다. 기존 migration만 적용할 때는 `npm run db:deploy`를 사용합니다. 주문 상태 migration은 기존 발주를 `ORDERED`로 유지합니다. `npm run db:seed`는 현재 데모 품목 10개를 ID 기준으로 upsert하고 기존 수정 값은 덮어쓰지 않아 반복 실행해도 중복 생성되지 않습니다. 포트폴리오 화면에 품목을 더 채우려면 기본 seed 실행 후 `npm run db:seed:showcase`를 선택적으로 실행하세요. 추가 품목 14개와 두 품목의 최근 7일 사용 이력이 등록되어, 최소 재고보다 많아도 납품 소요 전에 소진되어 발주가 필요한 사례를 보여줍니다. 다시 실행해도 기존 수정값과 이력을 덮어쓰거나 중복 생성하지 않습니다. 프론트엔드 빌드는 `npm run build`, 빌드 결과 미리보기는 `npm run preview`입니다.
+개발 중 스키마를 수정할 때는 `npm run db:migrate -- --name <변경명>`으로 migration을 생성·적용합니다. 기존 migration만 적용할 때는 `npm run db:deploy`를 사용합니다. 주문 상태 migration은 기존 발주를 `ORDERED`로 유지합니다. `npm run db:seed`는 현재 데모 품목 10개를 ID 기준으로 upsert하고 기존 수정 값은 덮어쓰지 않아 반복 실행해도 중복 생성되지 않습니다. 포트폴리오 시연용 데이터는 기본 seed 실행 후 `npm run db:seed:showcase`로 선택적으로 추가합니다. 프론트엔드 빌드는 `npm run build`, 빌드 결과 미리보기는 `npm run preview`입니다.
+
+## 포트폴리오 시연 데이터
+
+`npm run db:seed:showcase`는 추가 품목 14개, 두 품목의 최근 7일 사용 이력, 네 가지 주문 상태, 입고·폐기·수동 조정 이력, 비어 있다면 발주 대기열 한 건을 생성합니다. 동일 명령을 다시 실행해도 중복 생성하지 않으며, 이미 수정된 시연 품목이나 기존 대기열은 덮어쓰지 않습니다. 모든 사례를 재현하려면 별도의 새 데모 DB에서 기본 seed 다음 쇼케이스 seed를 실행하세요.
+
+| 화면에서 확인할 품목 | 보여주는 기능 |
+| --- | --- |
+| 오트밀크 / 에스프레소 원두 | 발주 대기열과 품절 긴급 알림. 기본 품목이 있으면 처음 선택되는 오트밀크를 대기열에 담습니다. |
+| 디카페인 원두 / 아몬드밀크 | 최소 재고보다 많아도 최근 사용량과 납품 소요기간 때문에 발주가 필요한 사례. |
+| 두유 | 발주 생성 후 입고 전 `ORDERED` 상태. |
+| 컵 홀더 | 10개 발주 중 4개만 입고한 `PARTIALLY_RECEIVED` 상태와 잔여 6개. |
+| 얼그레이 티 / 종이 빨대 | 전량 입고 후 완료 처리 가능한 `RECEIVED` 상태와 완료된 `COMPLETED` 상태. 주문에 연결된 `RESTOCK` 이력. 얼그레이 티는 사용 기록이 없는 정상 품목의 fallback도 보여줍니다. |
+| 딸기 퓌레 / 백설탕 | `WASTE`와 `ADJUSTMENT` 이력. |
+
+방문자는 첫 화면에서 상태 필터, 긴급 알림, 선택 품목과 대기열을 확인하고, **Orders**에서 미입고·부분 입고·완료 주문을 비교한 뒤 **History**에서 재고 변경 전후와 유형을 살펴볼 수 있습니다. 공개 라이브 데모에서는 방문자의 변경이 같은 DB를 쓰는 다른 방문자에게도 보입니다. 데모 전용 DB를 사용하고 세션별 격리 또는 주기적 재생성 방식을 마련해야 합니다. 이 seed는 사용자 데이터를 지우는 전체 초기화 명령이 아닙니다.
+
+최근 사용량 사례는 시간이 지나면 7일 계산 구간에서 벗어납니다. 시연 전 `npm run db:reset:showcase`로 두 사용 이력을 현재 시각에 맞춰 재생성하세요. 시연 이력 외 변경이 있으면 명령이 중단되어 그 품목을 덮어쓰지 않습니다. 긴급 알림은 같은 브라우저 탭에서 한 번만 나타나므로 첫 화면을 다시 보여줄 때는 새 탭을 사용하세요.
 
 ## 데이터와 API
 
@@ -94,7 +111,7 @@ npm run test:e2e
 ## 구조
 
 - `prisma/schema.prisma`, `prisma/migrations/`, `prisma/seed.js`: PostgreSQL 모델, migration, 데모 품목
-- `prisma/audit-stock.js`, `prisma/showcase-seed.js`: 재고 잔액 검사와 시연 이력 생성·재생성
+- `prisma/audit-stock.js`, `prisma/showcase-seed.js`, `prisma/portfolio-scenarios.js`: 재고 잔액 검사와 시연 이력·주문 생성
 - `server/app.js`, `server/index.js`, `server/validation.js`, `server/inventory-service.js`, `server/order-service.js`, `server/reorder.js`: Express 라우트, 검증, 재고·발주 트랜잭션, 추천 계산
 - `src/api.js`, `src/queryKeys.js`, `src/useInventory.js`, `src/useInventoryMutations.js`: API 호출, Query 조회·변경 캐시, 화면 오류 상태
 - `src/App.jsx`, `src/components/`: 기존 워크스페이스 화면과 인터랙션

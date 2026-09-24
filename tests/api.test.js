@@ -6,6 +6,7 @@ import { createApp } from "../server/app.js";
 import { seedItems } from "../src/data.js";
 import { auditStockLedger } from "../server/stock-audit.js";
 import { ensureShowcase } from "../prisma/showcase-seed.js";
+import { ensurePortfolioScenarios } from "../prisma/portfolio-scenarios.js";
 
 const testUrl = process.env.TEST_DATABASE_URL;
 if (!testUrl || !new URL(testUrl).pathname.endsWith("_test"))
@@ -312,6 +313,23 @@ test("item API persists CRUD, stock, queue and order changes in PostgreSQL", asy
     assert.equal((await prisma.stockMovement.findFirst({
       where: { itemId: "demo-decaf-beans" }, orderBy: { createdAt: "asc" },
     })).createdAt.toISOString(), replayedAt.toISOString());
+
+    const queueBeforeShowcase = await prisma.queueEntry.count();
+    assert.deepEqual(await ensurePortfolioScenarios(prisma, { asOf: new Date("2026-09-24T12:00:00Z") }), {
+      orders: 4, movements: 5, queued: queueBeforeShowcase === 0,
+    });
+    assert.equal((await prisma.order.findUnique({ where: { id: "showcase-order-pending" } })).status, "ORDERED");
+    const showcasePartial = await prisma.order.findUnique({ where: { id: "showcase-order-partial" }, include: { lines: true } });
+    assert.equal(showcasePartial.status, "PARTIALLY_RECEIVED");
+    assert.equal(showcasePartial.lines[0].receivedQuantity, 4);
+    assert.equal(showcasePartial.lines[0].orderedQuantity, 10);
+    assert.equal((await prisma.order.findUnique({ where: { id: "showcase-order-received" } })).status, "RECEIVED");
+    assert.equal((await prisma.order.findUnique({ where: { id: "showcase-order-completed" } })).status, "COMPLETED");
+    assert.equal(await prisma.stockMovement.count({ where: { orderId: { startsWith: "showcase-order-" } } }), 3);
+    assert.deepEqual(auditStockLedger(await prisma.item.findMany({ include: {
+      movements: { orderBy: [{ createdAt: "asc" }, { id: "asc" }] },
+    } })), []);
+    assert.deepEqual(await ensurePortfolioScenarios(prisma), { orders: 0, movements: 0, queued: false });
   } finally {
     server.close();
     await prisma.$disconnect();

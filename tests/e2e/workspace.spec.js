@@ -2,6 +2,8 @@ import "dotenv/config";
 import { test, expect } from "@playwright/test";
 import { PrismaClient } from "@prisma/client";
 import { seedItems } from "../../src/data.js";
+import { ensureShowcase } from "../../prisma/showcase-seed.js";
+import { ensurePortfolioScenarios } from "../../prisma/portfolio-scenarios.js";
 
 const testUrl = process.env.TEST_DATABASE_URL;
 if (!testUrl || !new URL(testUrl).pathname.endsWith("_test"))
@@ -103,6 +105,29 @@ test("reorder notice remains actionable on a narrow screen", async ({ page }) =>
   await expect(page.getByRole("button", { name: "발주 필요", exact: true })).toHaveAttribute("aria-pressed", "true");
   await page.getByRole("button", { name: "발주 목록에 추가", exact: true }).click();
   await expect(page.locator(".order-queue")).toBeVisible();
+});
+
+test("showcase data makes recommendations, order states and movement history explorable", async ({ page }) => {
+  const prisma = new PrismaClient({ datasources: { db: { url: testUrl } } });
+  try {
+    await ensureShowcase(prisma);
+    await ensurePortfolioScenarios(prisma);
+  } finally {
+    await prisma.$disconnect();
+  }
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: "긴급", exact: true })).toContainText("2");
+  await expect(page.locator(".order-queue")).toContainText("오트밀크");
+  await page.getByRole("button", { name: "Orders", exact: true }).click();
+  await expect(page.getByRole("dialog")).toContainText("부분 입고");
+  await expect(page.getByRole("dialog")).toContainText("잔여 6");
+  await expect(page.getByRole("dialog")).toContainText("입고됨");
+  await expect(page.getByRole("dialog").getByRole("button", { name: "완료 처리", exact: true })).toBeVisible();
+  await expect(page.getByRole("dialog")).toContainText("완료");
+  await page.getByRole("dialog").getByRole("button", { name: "닫기" }).click();
+  await page.getByRole("button", { name: "History", exact: true }).click();
+  await expect(page.getByRole("dialog")).toContainText("폐기 -2");
+  await expect(page.getByRole("dialog")).toContainText("재고 조정 +2");
 });
 
 test("quick controls and detailed movement types appear in History after refresh", async ({ page, request }) => {
