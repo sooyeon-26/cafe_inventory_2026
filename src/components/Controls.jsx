@@ -38,7 +38,7 @@ export function QuantityControl({
         className="circle"
         aria-label={`${label} 감소`}
         disabled={disabled || value <= min}
-        onClick={() => onChange(value - 1)}
+        onClick={() => onChange(value - 1, "decrement")}
       >
         −
       </button>
@@ -60,14 +60,14 @@ export function QuantityControl({
           if (event.target.value === "") return;
           const next = Number(event.target.value);
           if (Number.isSafeInteger(next) && next >= min && next <= MAX_QUANTITY)
-            onChange(next);
+            onChange(next, "input");
         }}
       />
       <button
         className="circle"
         aria-label={`${label} 증가`}
         disabled={disabled || value >= MAX_QUANTITY}
-        onClick={() => onChange(value + 1)}
+        onClick={() => onChange(value + 1, "increment")}
       >
         +
       </button>

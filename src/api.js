@@ -22,8 +22,11 @@ const body = (value) => JSON.stringify(value);
 
 export const inventoryApi = {
   state: () => request("/state"),
-  stock: (id, stock) => request(`/items/${encodeURIComponent(id)}/stock`, {
-    method: "PATCH", body: body({ stock }),
+  stock: (id, stock, type) => request(`/items/${encodeURIComponent(id)}/stock`, {
+    method: "PATCH", body: body({ stock, type }),
+  }),
+  movement: (id, input) => request(`/items/${encodeURIComponent(id)}/movements`, {
+    method: "POST", body: body(input),
   }),
   save: (item) => {
     const { id, ...data } = item;

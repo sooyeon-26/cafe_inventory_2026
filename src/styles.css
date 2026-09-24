@@ -1173,7 +1173,8 @@ svg {
   color: #79866d;
   margin-bottom: 18px;
 }
-.modal input {
+.modal input,
+.modal select {
   border: 1px solid #dfe6d7;
   border-radius: 8px;
   padding: 12px;
@@ -1239,6 +1240,9 @@ svg {
 }
 .history-dot.blue {
   background: #78a8ed;
+}
+.history-dot.red {
+  background: #c77865;
 }
 .history-list time {
   font-size: 10px;

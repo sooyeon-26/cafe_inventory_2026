@@ -11,6 +11,7 @@ test.beforeEach(async () => {
   const prisma = new PrismaClient({ datasources: { db: { url: testUrl } } });
   try {
     await prisma.$transaction([
+      prisma.stockMovement.deleteMany(),
       prisma.queueEntry.deleteMany(),
       prisma.activityEvent.deleteMany(),
       prisma.order.deleteMany(),
@@ -60,13 +61,59 @@ test("complete stock and ordering flow persists on refresh without console error
   await expect(page.getByRole("dialog")).toContainText(
     "발주 생성 · 오트밀크 8개",
   );
-  await expect(page.getByRole("dialog")).toContainText("재고 2 → 3");
+  await expect(page.getByRole("dialog")).toContainText("재고 조정 +1");
+  await expect(page.getByRole("dialog")).toContainText("2 → 3");
   await page.getByRole("button", { name: "닫기", exact: true }).click();
   await expect(
     page.getByRole("spinbutton", { name: "오트밀크 현재 재고", exact: true }),
   ).toHaveValue("3");
   expect(errors).toEqual([]);
 });
+
+test("quick controls and detailed movement types appear in History after refresh", async ({ page, request }) => {
+  await page.goto("/");
+  const stock = page.getByRole("spinbutton", { name: "오트밀크 현재 재고", exact: true });
+  await page.getByRole("button", { name: "오트밀크 현재 재고 감소" }).click();
+  await expect(stock).toHaveValue("1");
+  await page.getByRole("button", { name: "오트밀크 현재 재고 증가" }).click();
+  await expect(stock).toHaveValue("2");
+  const quickMovements = (await (await request.get("/api/items/oat/movements")).json()).data;
+  assertMovement(quickMovements, "USAGE", -1, 2, 1);
+  assertMovement(quickMovements, "ADJUSTMENT", 1, 1, 2);
+
+  const record = async (type, field, value, note) => {
+    await page.getByRole("button", { name: "재고 변경", exact: true }).click();
+    await page.getByLabel("변경 유형").selectOption({ label: type });
+    await page.getByLabel(field).fill(String(value));
+    if (note) await page.getByLabel("메모 (선택)").fill(note);
+    await page.getByRole("dialog").getByRole("button", { name: "변경 저장" }).click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+  };
+  await record("폐기", "변경 수량", 1, "파손");
+  await expect(stock).toHaveValue("1");
+  await record("입고", "변경 수량", 4);
+  await expect(stock).toHaveValue("5");
+  await record("재고 조정", "변경 후 수량", 3);
+  await expect(stock).toHaveValue("3");
+  await page.reload();
+  await expect(stock).toHaveValue("3");
+  await page.getByRole("button", { name: "History", exact: true }).click();
+  const history = page.getByRole("dialog");
+  await expect(history).toContainText("사용 -1");
+  await expect(history).toContainText("폐기 -1");
+  await expect(history).toContainText("파손");
+  await expect(history).toContainText("입고 +4");
+  await expect(history).toContainText("재고 조정 -2");
+  await expect(history).toContainText("5 → 3");
+});
+
+function assertMovement(movements, type, change, before, after) {
+  expect(movements).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      type, quantityChange: change, beforeQuantity: before, afterQuantity: after,
+    }),
+  ]));
+}
 test("search, filters, queue removal and item selection", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("textbox", { name: "품목 검색" }).fill("바닐라");

@@ -81,6 +81,7 @@ export default function ItemWorkspace({
   queued,
   onEdit,
   onDelete,
+  onMovement,
   disabled = false,
 }) {
   if (!item)
@@ -97,6 +98,8 @@ export default function ItemWorkspace({
       <div className="detail-topline">
         <span className="eyebrow">ITEM WORKSPACE</span>
         <div className="item-actions">
+          <button onClick={onMovement} disabled={disabled}>재고 변경</button>
+          <span>/</span>
           <button onClick={onEdit} disabled={disabled}>품목 수정</button>
           <span>/</span>
           <button onClick={onDelete} disabled={disabled}>삭제</button>

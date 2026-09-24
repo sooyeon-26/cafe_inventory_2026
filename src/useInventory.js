@@ -32,7 +32,8 @@ export function useInventory() {
     try {
       let result;
       switch (action.type) {
-        case "stock": result = await inventoryApi.stock(action.id, action.value); break;
+        case "stock": result = await inventoryApi.stock(action.id, action.value, action.movementType); break;
+        case "movement": result = await inventoryApi.movement(action.id, action.input); break;
         case "save": result = await inventoryApi.save(action.item); break;
         case "delete": result = await inventoryApi.delete(action.id); break;
         case "queue-add": result = await inventoryApi.queueAdd(action.id); break;

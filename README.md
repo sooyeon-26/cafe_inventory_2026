@@ -20,7 +20,9 @@ npm run dev
 
 ## 데이터와 API
 
-`Item`은 기존 화면의 필드명인 `stock`, `minimum`, `target`을 유지하며 `id`, `name`, `category`, `unit`, `createdAt`, `updatedAt`을 가집니다. `QueueEntry`는 품목별 발주 수량을, `ActivityEvent`는 화면의 History를, `Order`는 발주 시점의 품목·수량 스냅샷을 저장합니다. 이번 단계에서는 재고 이동 내역이나 주문 상태 모델을 사용하지 않습니다.
+`Item`은 화면의 `stock`, `minimum`, `target` 필드명을 유지합니다. `stock`은 현재 잔액이며, 변경 시 `StockMovement`에 유형·변경량·변경 전후 수량·메모·시각을 함께 기록합니다. 두 쓰기는 한 PostgreSQL 트랜잭션에서 처리하고 같은 품목 행을 잠가 동시 변경의 순서를 보장합니다. `QueueEntry`는 발주 대기열을, `ActivityEvent`는 품목·발주 활동 및 도입 이전의 문자열 기록을, `Order`는 데모 발주 스냅샷을 저장합니다. 새 재고 변경은 `ActivityEvent`에 중복 기록하지 않습니다.
+
+`USAGE`는 사용·소비, `RESTOCK`은 입고, `WASTE`는 폐기, `ADJUSTMENT`는 수동 조정입니다. 화면의 `−`는 `USAGE`, `+`와 직접 수량 입력은 `ADJUSTMENT`로 기록됩니다. 재고 변경 창에서 유형·수량·메모를 선택할 수 있습니다. 기존 DB의 `Item.stock`은 migration에서 바꾸지 않고 도입 시점의 시작 잔액으로 취급하므로 과거 이동 이벤트를 임의로 생성하지 않습니다. 새 품목의 초기 재고가 0보다 크면 `ADJUSTMENT` 시작 이벤트가 생성됩니다. 삭제된 품목은 화면에서 숨기되 DB 행과 Movement 관계를 보존합니다.
 
 API의 성공 응답은 `{ "data": ... }`, 오류 응답은 `{ "error": { "code": "...", "message": "..." } }` 형식입니다. 아래 경로는 `/api` 접두사로도 사용할 수 있습니다.
 
@@ -33,7 +35,10 @@ API의 성공 응답은 `{ "data": ... }`, 오류 응답은 `{ "error": { "code"
 | POST | `/items` | 품목 등록 |
 | PATCH | `/items/:id` | 품목 정보·기준 재고 수정 |
 | PATCH | `/items/:id/stock` | 현재 재고 수정 |
-| DELETE | `/items/:id` | 품목 및 대기열 항목 삭제 |
+| POST | `/items/:id/movements` | 유형별 재고 변경 및 Movement 기록 |
+| GET | `/items/:id/movements` | 품목의 재고 변경 내역 |
+| GET | `/movements` | 전체 재고 변경 내역 (`itemId`, `type` 필터 선택) |
+| DELETE | `/items/:id` | 품목 숨김 및 대기열 항목 삭제 (Movement 보존) |
 | POST | `/queue` | 발주 대기열 추가 |
 | PATCH | `/queue/:id` | 발주 수량 수정 |
 | DELETE | `/queue/:id` | 발주 대기열 제거 |
@@ -41,9 +46,11 @@ API의 성공 응답은 `{ "data": ... }`, 오류 응답은 `{ "error": { "code"
 
 기존 발주 제안량은 `max(적정 재고 - 현재 재고, 0)`입니다. 수량은 0~999,999의 정수이고 발주 수량은 1 이상이며 적정 재고는 최소 재고 이상이어야 합니다. 발주는 입고를 의미하지 않으므로 재고를 변경하지 않습니다. 브라우저의 과거 `cafe-inventory:v1` localStorage 값은 읽거나 덮어쓰지 않습니다. 기존 브라우저에만 있던 사용자 지정 데이터가 있다면 별도로 내보낸 뒤 API로 이전해야 합니다.
 
+`POST /items/:id/movements`는 사용·입고·폐기에 `{ "type": "USAGE", "quantity": 2, "note": "오전 사용" }`처럼 양수 수량을 받고, 수동 조정에는 `{ "type": "ADJUSTMENT", "afterQuantity": 8 }` 또는 `{ "type": "ADJUSTMENT", "quantityChange": 1 }`을 받습니다. 빠른 조정과 기존 `PATCH /items/:id/stock`도 Movement를 생성합니다. History의 새 재고 항목은 Movement에서 읽으며, 이전 문자열 활동 기록은 그대로 남습니다.
+
 ## 테스트
 
-API와 브라우저 통합 테스트에는 이름이 `_test`로 끝나는 별도 PostgreSQL 데이터베이스를 만들고 `TEST_DATABASE_URL`을 설정하세요. `DATABASE_URL`을 테스트 DB URL로 일시 설정한 상태에서 `npm run db:deploy`와 `npm run db:seed`를 실행해 준비합니다. 브라우저 테스트는 매 테스트 전에 그 DB의 품목·대기열·이력·데모 발주를 초기화하므로 운영 DB URL을 사용하면 안 됩니다.
+API와 브라우저 통합 테스트에는 이름이 `_test`로 끝나는 별도 PostgreSQL 데이터베이스를 만들고 `TEST_DATABASE_URL`을 설정하세요. `DATABASE_URL`을 테스트 DB URL로 일시 설정한 상태에서 `npm run db:deploy`와 `npm run db:seed`를 실행해 준비합니다. 통합 테스트는 그 DB의 품목·Movement·대기열·이력·데모 발주를 초기화하므로 운영 DB URL을 사용하면 안 됩니다.
 
 ```sh
 npm test
@@ -54,7 +61,7 @@ npx playwright install chromium
 npm run test:e2e
 ```
 
-브라우저 테스트는 테스트 DB에 연결한 API와 프론트엔드를 자동으로 실행하고, 재고·발주·품목 CRUD, 새로고침 후 유지, 필터와 반응형 레이아웃을 확인합니다.
+브라우저 테스트는 테스트 DB에 연결한 API와 프론트엔드를 자동으로 실행하고, Movement 유형과 History, 새로고침 후 유지, 품목 CRUD, 발주·필터·반응형 레이아웃을 확인합니다. API 테스트는 변경 전후 수량, 동시 요청의 순서, Movement 저장 실패 시 전체 롤백도 확인합니다.
 
 ## 구조
 

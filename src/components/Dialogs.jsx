@@ -1,6 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { MAX_QUANTITY } from "../inventory.js";
 
+const movementLabels = {
+  USAGE: "사용",
+  RESTOCK: "입고",
+  WASTE: "폐기",
+  ADJUSTMENT: "재고 조정",
+};
+
 export function Modal({ title, onClose, children, className = "" }) {
   const ref = useRef(null);
   useEffect(() => {
@@ -138,6 +145,60 @@ export function ItemForm({ item, onSave, onClose, disabled = false }) {
     </Modal>
   );
 }
+export function MovementForm({ item, onSave, onClose, disabled = false }) {
+  const [type, setType] = useState(item.stock > 0 ? "USAGE" : "RESTOCK");
+  const [error, setError] = useState("");
+  return (
+    <Modal title="재고 변경" onClose={onClose}>
+      <form onSubmit={async (event) => {
+        event.preventDefault();
+        setError("");
+        const form = new FormData(event.currentTarget);
+        const input = { type, note: form.get("note").trim() };
+        if (type === "ADJUSTMENT") {
+          input.afterQuantity = Number(form.get("afterQuantity"));
+          if (input.afterQuantity === item.stock)
+            return setError("현재 재고와 다른 수량을 입력해 주세요.");
+        } else {
+          input.quantity = Number(form.get("quantity"));
+          if (input.quantity < 1 || ((type === "USAGE" || type === "WASTE") && input.quantity > item.stock))
+            return setError("변경할 수량을 확인해 주세요.");
+        }
+        if (!await onSave(input)) setError("재고 변경을 저장하지 못했습니다. 다시 시도해 주세요.");
+      }}>
+        <p className="modal-description">{item.name} · 현재 재고 {item.stock}{item.unit}</p>
+        <label>
+          변경 유형
+          <select name="type" value={type} onChange={(event) => { setType(event.target.value); setError(""); }}>
+            {Object.entries(movementLabels).map(([value, label]) => (
+              <option key={value} value={value}>{label}</option>
+            ))}
+          </select>
+        </label>
+        {type === "ADJUSTMENT" ? (
+          <label>
+            변경 후 수량
+            <input type="number" name="afterQuantity" min="0" max={MAX_QUANTITY} step="1" required defaultValue={item.stock} />
+          </label>
+        ) : (
+          <label>
+            변경 수량
+            <input type="number" name="quantity" min="1" max={MAX_QUANTITY} step="1" required defaultValue="1" />
+          </label>
+        )}
+        <label>
+          메모 (선택)
+          <input name="note" maxLength="240" placeholder="예: 오전 영업 사용" />
+        </label>
+        {error && <p role="alert" className="form-error">{error}</p>}
+        <div className="modal-actions">
+          <button type="button" className="secondary" onClick={onClose}>취소</button>
+          <button className="primary" type="submit" disabled={disabled}>변경 저장</button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
 export function History({ history, onClose }) {
   return (
     <Modal title="History" onClose={onClose} className="history-modal">
@@ -149,7 +210,9 @@ export function History({ history, onClose }) {
           history.map((event) => (
             <article key={event.id}>
               <span
-                className={`history-dot ${event.text.startsWith("발주") ? "blue" : ""}`}
+                className={`history-dot ${event.kind === "movement"
+                  ? event.type === "RESTOCK" ? "blue" : event.type === "WASTE" ? "red" : ""
+                  : event.text.startsWith("발주") ? "blue" : ""}`}
               />
               <div>
                 <time>
@@ -158,7 +221,14 @@ export function History({ history, onClose }) {
                     timeStyle: "short",
                   }).format(new Date(event.date))}
                 </time>
-                <p>{event.text}</p>
+                {event.kind === "movement" ? (
+                  <p>
+                    <strong>{event.itemName}</strong><br />
+                    {movementLabels[event.type]} {event.quantityChange > 0 ? "+" : ""}{event.quantityChange}<br />
+                    {event.beforeQuantity} → {event.afterQuantity}
+                    {event.note ? ` · ${event.note}` : ""}
+                  </p>
+                ) : <p>{event.text}</p>}
               </div>
             </article>
           ))

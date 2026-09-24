@@ -5,7 +5,7 @@ import ItemWorkspace from "./components/ItemWorkspace.jsx";
 import OrderQueue from "./components/OrderQueue.jsx";
 import OrderFlow from "./components/OrderFlow.jsx";
 import { suggestedOrder } from "./inventory.js";
-import { History, ItemForm, Modal } from "./components/Dialogs.jsx";
+import { History, ItemForm, Modal, MovementForm } from "./components/Dialogs.jsx";
 
 export default function App() {
   const { state, act, loading, busy, error, retry } = useInventory();
@@ -127,12 +127,21 @@ export default function App() {
           />
           <ItemWorkspace
             item={selected}
-            onStock={(value) => act({ type: "stock", id: selected.id, value })}
+            onStock={(value, source) => {
+              if (source === "decrement") return act({
+                type: "movement", id: selected.id, input: { type: "USAGE", quantity: 1 },
+              });
+              if (source === "increment") return act({
+                type: "movement", id: selected.id, input: { type: "ADJUSTMENT", quantityChange: 1 },
+              });
+              return act({ type: "stock", id: selected.id, value, movementType: "ADJUSTMENT" });
+            }}
             onAdd={addOrder}
             queued={queued}
             disabled={busy || loading}
             onEdit={() => setDialog("edit")}
             onDelete={() => setDialog("delete")}
+            onMovement={() => setDialog("movement")}
           />
           <OrderQueue
             items={state.items}
@@ -194,6 +203,19 @@ export default function App() {
             return true;
           }}
           disabled={busy}
+        />
+      )}
+      {dialog === "movement" && selected && (
+        <MovementForm
+          item={selected}
+          disabled={busy}
+          onClose={() => setDialog(null)}
+          onSave={async (input) => {
+            if (!await act({ type: "movement", id: selected.id, input })) return false;
+            setDialog(null);
+            notify("재고 변경을 기록했어요.");
+            return true;
+          }}
         />
       )}
       {dialog === "history" && (

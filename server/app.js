@@ -4,6 +4,7 @@ import { MAX_QUANTITY } from "../src/inventory.js";
 
 const itemFields = ["name", "category", "unit", "stock", "minimum", "target"];
 const textLimits = { name: 60, category: 30, unit: 20 };
+const movementTypes = new Set(["USAGE", "RESTOCK", "WASTE", "ADJUSTMENT"]);
 
 class HttpError extends Error {
   constructor(status, code, message) {
@@ -60,6 +61,79 @@ const itemResponse = (item) => ({
   updatedAt: item.updatedAt,
 });
 
+function movementNote(value) {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value !== "string" || value.trim().length > 240)
+    throw badRequest("메모는 240자 이하여야 합니다.");
+  return value.trim() || null;
+}
+
+function movementType(value) {
+  if (!movementTypes.has(value)) throw badRequest("올바른 재고 변경 유형을 선택해 주세요.");
+  return value;
+}
+
+function assertMovementDirection(type, change) {
+  if (!change) throw badRequest("재고 변경량은 0일 수 없습니다.");
+  if (type === "RESTOCK" && change < 0)
+    throw badRequest("입고 수량은 증가해야 합니다.");
+  if ((type === "USAGE" || type === "WASTE") && change > 0)
+    throw badRequest("사용·폐기 수량은 감소해야 합니다.");
+}
+
+async function activeItemForUpdate(tx, id) {
+  const rows = await tx.$queryRaw`SELECT "id" FROM "Item" WHERE "id" = ${id} AND "deletedAt" IS NULL FOR UPDATE`;
+  if (!rows.length) throw notFound("품목을 찾을 수 없습니다.");
+  return tx.item.findUnique({ where: { id } });
+}
+
+async function recordStockChange(tx, item, { type, afterQuantity, note }, allowNoChange = false) {
+  quantity(afterQuantity, "stock");
+  const quantityChange = afterQuantity - item.stock;
+  if (!quantityChange && allowNoChange) return { item, movement: null };
+  assertMovementDirection(type, quantityChange);
+  const updated = await tx.item.update({ where: { id: item.id }, data: { stock: afterQuantity } });
+  const movement = await tx.stockMovement.create({ data: {
+    itemId: item.id,
+    itemName: item.name,
+    type,
+    quantityChange,
+    beforeQuantity: item.stock,
+    afterQuantity,
+    note,
+  } });
+  return { item: updated, movement };
+}
+
+function movementInput(body, currentStock) {
+  if (!body || typeof body !== "object" || Array.isArray(body))
+    throw badRequest("재고 변경 정보를 입력해 주세요.");
+  const type = movementType(body.type);
+  const allowed = type === "ADJUSTMENT"
+    ? ["type", "afterQuantity", "quantityChange", "note"]
+    : ["type", "quantity", "note"];
+  if (Object.keys(body).some((key) => !allowed.includes(key)))
+    throw badRequest("지원하지 않는 재고 변경 필드가 있습니다.");
+  let afterQuantity;
+  if (type === "ADJUSTMENT") {
+    if (("afterQuantity" in body) === ("quantityChange" in body))
+      throw badRequest("변경 후 수량 또는 변경량 중 하나만 입력해 주세요.");
+    if ("quantityChange" in body) {
+      const change = body.quantityChange;
+      if (!Number.isSafeInteger(change) || !change || Math.abs(change) > MAX_QUANTITY)
+        throw badRequest("변경량은 0이 아닌 정수여야 합니다.");
+      afterQuantity = currentStock + change;
+    } else {
+      afterQuantity = quantity(body.afterQuantity, "afterQuantity");
+    }
+  } else {
+    afterQuantity = currentStock + (type === "RESTOCK"
+      ? quantity(body.quantity, "quantity", 1)
+      : -quantity(body.quantity, "quantity", 1));
+  }
+  return { type, afterQuantity, note: movementNote(body.note) };
+}
+
 export function createApp(prisma) {
   const app = express();
   app.disable("x-powered-by");
@@ -71,11 +145,16 @@ export function createApp(prisma) {
     res.json({ data: { status: "ok" } });
   });
   router.get("/state", async (_req, res) => {
-    const [items, queue, history] = await prisma.$transaction([
-      prisma.item.findMany({ orderBy: { createdAt: "asc" } }),
+    const [items, queue, activity, movements] = await prisma.$transaction([
+      prisma.item.findMany({ where: { deletedAt: null }, orderBy: { createdAt: "asc" } }),
       prisma.queueEntry.findMany({ orderBy: { createdAt: "asc" } }),
       prisma.activityEvent.findMany({ orderBy: { date: "desc" } }),
-    ]);
+      prisma.stockMovement.findMany({ orderBy: { createdAt: "desc" } }),
+    ], { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+    const history = [
+      ...activity.map((event) => ({ ...event, kind: "activity" })),
+      ...movements.map((movement) => ({ ...movement, kind: "movement", date: movement.createdAt })),
+    ].sort((a, b) => b.date - a.date);
     res.json({ data: {
       items: items.map(itemResponse),
       queue: queue.map((entry) => ({ id: entry.itemId, quantity: entry.quantity })),
@@ -83,56 +162,89 @@ export function createApp(prisma) {
     } });
   });
   router.get("/items", async (_req, res) => {
-    const items = await prisma.item.findMany({ orderBy: { createdAt: "asc" } });
+    const items = await prisma.item.findMany({ where: { deletedAt: null }, orderBy: { createdAt: "asc" } });
     res.json({ data: items.map(itemResponse) });
   });
   router.get("/items/:id", async (req, res) => {
     const item = await prisma.item.findUnique({ where: { id: req.params.id } });
-    if (!item) throw notFound("품목을 찾을 수 없습니다.");
+    if (!item || item.deletedAt) throw notFound("품목을 찾을 수 없습니다.");
     res.json({ data: itemResponse(item) });
   });
   router.post("/items", async (req, res) => {
     const data = itemInput(req.body);
     const item = await prisma.$transaction(async (tx) => {
-      const created = await tx.item.create({ data });
+      const created = await tx.item.create({ data: { ...data, stock: 0 } });
       await tx.activityEvent.create({ data: { text: `${created.name} · 품목 등록` } });
-      return created;
+      if (!data.stock) return created;
+      return (await recordStockChange(tx, created, {
+        type: "ADJUSTMENT", afterQuantity: data.stock, note: "초기 재고",
+      })).item;
     });
     res.status(201).json({ data: itemResponse(item) });
   });
   router.patch("/items/:id", async (req, res) => {
     const item = await prisma.$transaction(async (tx) => {
-      const previous = await tx.item.findUnique({ where: { id: req.params.id } });
-      if (!previous) throw notFound("품목을 찾을 수 없습니다.");
+      const previous = await activeItemForUpdate(tx, req.params.id);
       const data = itemInput(req.body, previous);
-      const updated = await tx.item.update({ where: { id: previous.id }, data });
-      if (data.stock !== undefined && data.stock !== previous.stock)
-        await tx.activityEvent.create({ data: { text: `${previous.name} · 재고 ${previous.stock} → ${data.stock}` } });
+      const { stock, ...fields } = data;
+      let updated = Object.keys(fields).length
+        ? await tx.item.update({ where: { id: previous.id }, data: fields })
+        : previous;
       if (itemFields.some((key) => key !== "stock" && data[key] !== undefined && data[key] !== previous[key]))
         await tx.activityEvent.create({ data: { text: `${updated.name} · 품목 수정` } });
+      if (stock !== undefined && stock !== previous.stock)
+        updated = (await recordStockChange(tx, updated, {
+          type: "ADJUSTMENT", afterQuantity: stock, note: "품목 수정",
+        })).item;
       return updated;
     });
     res.json({ data: itemResponse(item) });
   });
   router.patch("/items/:id/stock", async (req, res) => {
-    if (!req.body || Object.keys(req.body).length !== 1 || !("stock" in req.body))
+    if (!req.body || !("stock" in req.body) || Object.keys(req.body).some((key) => !["stock", "type", "note"].includes(key)))
       throw badRequest("stock 값을 입력해 주세요.");
     const stock = quantity(req.body.stock, "stock");
+    const type = movementType(req.body.type ?? "ADJUSTMENT");
+    const note = movementNote(req.body.note);
     const item = await prisma.$transaction(async (tx) => {
-      const previous = await tx.item.findUnique({ where: { id: req.params.id } });
-      if (!previous) throw notFound("품목을 찾을 수 없습니다.");
-      if (previous.stock === stock) return previous;
-      const updated = await tx.item.update({ where: { id: previous.id }, data: { stock } });
-      await tx.activityEvent.create({ data: { text: `${previous.name} · 재고 ${previous.stock} → ${stock}` } });
-      return updated;
+      const previous = await activeItemForUpdate(tx, req.params.id);
+      return (await recordStockChange(tx, previous, {
+        type, afterQuantity: stock, note,
+      }, true)).item;
     });
     res.json({ data: itemResponse(item) });
   });
+  router.post("/items/:id/movements", async (req, res) => {
+    const movement = await prisma.$transaction(async (tx) => {
+      const item = await activeItemForUpdate(tx, req.params.id);
+      return (await recordStockChange(tx, item, movementInput(req.body, item.stock))).movement;
+    });
+    res.status(201).json({ data: movement });
+  });
+  router.get("/items/:id/movements", async (req, res) => {
+    const item = await prisma.item.findUnique({ where: { id: req.params.id }, select: { id: true } });
+    if (!item) throw notFound("품목을 찾을 수 없습니다.");
+    const movements = await prisma.stockMovement.findMany({
+      where: { itemId: item.id }, orderBy: { createdAt: "desc" },
+    });
+    res.json({ data: movements });
+  });
+  router.get("/movements", async (req, res) => {
+    const where = {};
+    if (req.query.itemId !== undefined) {
+      if (typeof req.query.itemId !== "string" || !req.query.itemId)
+        throw badRequest("올바른 itemId를 입력해 주세요.");
+      where.itemId = req.query.itemId;
+    }
+    if (req.query.type !== undefined) where.type = movementType(req.query.type);
+    const movements = await prisma.stockMovement.findMany({ where, orderBy: { createdAt: "desc" } });
+    res.json({ data: movements });
+  });
   router.delete("/items/:id", async (req, res) => {
     await prisma.$transaction(async (tx) => {
-      const item = await tx.item.findUnique({ where: { id: req.params.id } });
-      if (!item) throw notFound("품목을 찾을 수 없습니다.");
-      await tx.item.delete({ where: { id: item.id } });
+      const item = await activeItemForUpdate(tx, req.params.id);
+      await tx.queueEntry.deleteMany({ where: { itemId: item.id } });
+      await tx.item.update({ where: { id: item.id }, data: { deletedAt: new Date() } });
       await tx.activityEvent.create({ data: { text: `${item.name} · 품목 삭제` } });
     });
     res.json({ data: { id: req.params.id } });
@@ -142,7 +254,7 @@ export function createApp(prisma) {
       throw badRequest("품목 id를 입력해 주세요.");
     const entry = await prisma.$transaction(async (tx) => {
       const item = await tx.item.findUnique({ where: { id: req.body.id } });
-      if (!item) throw notFound("품목을 찾을 수 없습니다.");
+      if (!item || item.deletedAt) throw notFound("품목을 찾을 수 없습니다.");
       const existing = await tx.queueEntry.findUnique({ where: { itemId: item.id } });
       if (existing) return existing;
       const suggested = Math.max(item.target - item.stock, 0);
